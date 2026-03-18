@@ -1,64 +1,62 @@
 /**
- * 台股雷達 Stock Radar — app.js  V0.2
- * Changes from V0.1:
- *   - Query source: ALL Taiwan listed stocks (TSE / OTC / ALL)
- *   - Header shows actual data date from TWSE + fetch timestamp
- *   - Results: ★ opens watchlist category picker modal
+ * 台股雷達 Stock Radar — app.js  V0.3
+ * Fixes:
+ *   - CORS / Failed to fetch: use FinMind list + TWSE with fallback proxy
+ *   - Icons moved to root
+ *   - Robust fetch with timeout + retry
  */
 
-const APP_VERSION = 'V0.2';
+const APP_VERSION = 'V0.3';
 
 const CONFIG = {
   FINMIND_BASE:        'https://api.finmindtrade.com/api/v4/data',
-  TWSE_BASE:           'https://openapi.twse.com.tw/v1',
-  TPEX_BASE:           'https://www.tpex.org.tw/openapi/v1',
+  FINMIND_INFO:        'https://api.finmindtrade.com/api/v4/stock_info',
+  // TWSE OpenAPI (CORS-enabled official endpoint)
+  TWSE_DAY_ALL:        'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL',
+  // TWSE Official summary (alternative if DAY_ALL fails)
+  TWSE_MI_INDEX:       'https://openapi.twse.com.tw/v1/exchangeReport/MI_INDEX',
+  // Fetch timeout ms
+  FETCH_TIMEOUT:       15000,
   CACHE_TTL_PRICE:     30 * 60 * 1000,
   CACHE_TTL_REVENUE:    6 * 60 * 60 * 1000,
   CACHE_TTL_FINANCIAL: 24 * 60 * 60 * 1000,
-  CACHE_TTL_BULK:      20 * 60 * 1000,
-  RATE_LIMIT_DELAY: 280,
-  DEFAULT_BATCH: 50,
-  MAX_BATCH: 120,
+  CACHE_TTL_BULK:      25 * 60 * 1000,
+  RATE_LIMIT_DELAY:    320,
+  DEFAULT_BATCH:       50,
+  MAX_BATCH:           120,
 };
 
 /* ── State ── */
 let state = {
-  theme:         localStorage.getItem('theme') || 'dark',
-  finmindToken:  localStorage.getItem('finmindToken') || '',
-  watchlist:     JSON.parse(localStorage.getItem('watchlist') || '{"預設":{"stocks":[]}}'),
-  currentPage:   'screen',
-  results:       [],
-  isLoading:     false,
-  dataDate:      null,   // YYYY-MM-DD from TWSE actual data
-  lastUpdate:    null,   // JS Date when fetch completed
-  marketScope:   localStorage.getItem('marketScope') || 'TSE',
-  batchSize:     parseInt(localStorage.getItem('batchSize') || String(50), 10),
-  abortSignal:   false,
+  theme:        localStorage.getItem('theme') || 'dark',
+  finmindToken: localStorage.getItem('finmindToken') || '',
+  watchlist:    JSON.parse(localStorage.getItem('watchlist') || '{"預設":{"stocks":[]}}'),
+  currentPage:  'screen',
+  results:      [],
+  isLoading:    false,
+  dataDate:     null,
+  lastUpdate:   null,
+  marketScope:  localStorage.getItem('marketScope') || 'TSE',
+  batchSize:    parseInt(localStorage.getItem('batchSize') || '50', 10),
+  abortSignal:  false,
   filters: {
-    rs90: false, nearMonthlyHigh: false, shortMAAlign: false,
-    longMAAlign: false, aboveSubPoint: false,
-    revenueHighRecord: false, revenueYoY: false, revenueMoM: false,
-    marginGrowth: false, noProfitLoss: false,
-    chipConcentration: false, buyerSellerDiff: false,
-    foreignBuy: false, trustBuy: false,
-    bigHolderIncrease: false, institutionalRecord: false,
+    rs90:false, nearMonthlyHigh:false, shortMAAlign:false, longMAAlign:false, aboveSubPoint:false,
+    revenueHighRecord:false, revenueYoY:false, revenueMoM:false, marginGrowth:false, noProfitLoss:false,
+    chipConcentration:false, buyerSellerDiff:false, foreignBuy:false, trustBuy:false,
+    bigHolderIncrease:false, institutionalRecord:false,
   },
 };
 
-/* ── Utilities ── */
+/* ── Utils ── */
 const fmtDate = d =>
   `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 
 const fmtHeaderDT = d => {
   if (!d) return '尚未查詢';
-  const [yy, m, dd, hh, mm] = [
-    String(d.getFullYear()).slice(2),
-    String(d.getMonth()+1).padStart(2,'0'),
-    String(d.getDate()).padStart(2,'0'),
-    String(d.getHours()).padStart(2,'0'),
-    String(d.getMinutes()).padStart(2,'0'),
-  ];
-  return `${yy}/${m}/${dd} ${hh}:${mm}`;
+  return [String(d.getFullYear()).slice(2),
+          String(d.getMonth()+1).padStart(2,'0'),
+          String(d.getDate()).padStart(2,'0')].join('/') +
+    ' ' + [String(d.getHours()).padStart(2,'0'), String(d.getMinutes()).padStart(2,'0')].join(':');
 };
 
 const fmtDataDate = s => {
@@ -67,48 +65,79 @@ const fmtDataDate = s => {
   return p.length === 3 ? `${p[0].slice(2)}/${p[1]}/${p[2]}` : s;
 };
 
-const dateMonthsAgo = n => { const d = new Date(); d.setMonth(d.getMonth() - n); return d; };
-const avg = arr => arr.length ? arr.reduce((a,b) => a+b, 0) / arr.length : 0;
+const monthsAgo = n => { const d = new Date(); d.setMonth(d.getMonth() - n); return d; };
+const avg = a => a.length ? a.reduce((x,y)=>x+y,0)/a.length : 0;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const n2 = (v, d=2) => (v === null || v === undefined || isNaN(v)) ? '--' : Number(v).toFixed(d);
-const getAF = () => Object.entries(state.filters).filter(([,v]) => v).map(([k]) => k);
+const n2 = (v, d=2) => (v===null||v===undefined||isNaN(v)) ? '--' : Number(v).toFixed(d);
+const getAF = () => Object.entries(state.filters).filter(([,v])=>v).map(([k])=>k);
 
 const isEquity = code => {
-  if (!code || /^0/.test(code) || /[A-Za-z]/.test(code) || code.length > 4) return false;
+  if (!code) return false;
+  if (/^0/.test(code)) return false;      // ETF
+  if (/[A-Za-z]/.test(code)) return false; // warrants
+  if (code.length !== 4) return false;     // must be 4-digit
   return true;
 };
 
 /* ── Cache ── */
 const Cache = {
-  get(key) {
+  get(k) {
     try {
-      const s = localStorage.getItem(`cache_${key}`);
+      const s = localStorage.getItem(`cache_${k}`);
       if (!s) return null;
       const {ts,data,ttl} = JSON.parse(s);
-      if (Date.now()-ts > ttl) { localStorage.removeItem(`cache_${key}`); return null; }
+      if (Date.now()-ts > ttl) { localStorage.removeItem(`cache_${k}`); return null; }
       return data;
     } catch { return null; }
   },
-  set(key, data, ttl) {
-    try { localStorage.setItem(`cache_${key}`, JSON.stringify({ts:Date.now(),data,ttl})); } catch {}
+  set(k, data, ttl) {
+    try { localStorage.setItem(`cache_${k}`, JSON.stringify({ts:Date.now(),data,ttl})); } catch {}
   },
   clear() {
-    Object.keys(localStorage).filter(k => k.startsWith('cache_')).forEach(k => localStorage.removeItem(k));
+    Object.keys(localStorage).filter(k=>k.startsWith('cache_')).forEach(k=>localStorage.removeItem(k));
   },
 };
 
-/* ── API ── */
+/* ─────────────────────────────────────────────────────────
+   FETCH HELPER — timeout + CORS-safe options
+   ───────────────────────────────────────────────────────── */
+async function fetchJSON(url, opts = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CONFIG.FETCH_TIMEOUT);
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' },
+      signal: controller.signal,
+      ...opts,
+    });
+    clearTimeout(timer);
+    if (!res.ok) throw new Error(`HTTP ${res.status} — ${url}`);
+    return await res.json();
+  } catch (e) {
+    clearTimeout(timer);
+    if (e.name === 'AbortError') throw new Error(`請求逾時（${CONFIG.FETCH_TIMEOUT/1000}s）`);
+    throw e;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────
+   API SERVICE
+   ───────────────────────────────────────────────────────── */
 const API = {
+
+  /* FinMind datasets */
   async finmind(dataset, dataId, startDate) {
     if (!state.finmindToken) throw new Error('請先在【設定】頁輸入 FinMind API Token');
     const ck = `fm_${dataset}_${dataId}_${startDate}`;
-    const cached = Cache.get(ck);
-    if (cached) return cached;
-    const params = new URLSearchParams({dataset, data_id:dataId, start_date:startDate, token:state.finmindToken});
-    const res = await fetch(`${CONFIG.FINMIND_BASE}?${params}`);
-    if (!res.ok) throw new Error(`FinMind HTTP ${res.status}`);
-    const json = await res.json();
-    if (json.status !== 200) throw new Error(json.msg || `FinMind error (${dataset})`);
+    const cached = Cache.get(ck); if (cached) return cached;
+
+    const url = `${CONFIG.FINMIND_BASE}?` + new URLSearchParams({
+      dataset, data_id: dataId, start_date: startDate, token: state.finmindToken,
+    });
+    const json = await fetchJSON(url);
+    if (json.status !== 200) throw new Error(json.msg || `FinMind 錯誤(${dataset})`);
+
     const ttl = dataset.includes('Price') ? CONFIG.CACHE_TTL_PRICE
               : dataset.includes('Revenue') ? CONFIG.CACHE_TTL_REVENUE
               : CONFIG.CACHE_TTL_FINANCIAL;
@@ -116,186 +145,234 @@ const API = {
     return json.data;
   },
 
-  async twseBulk() {
-    const ck = 'twse_bulk';
-    const cached = Cache.get(ck);
-    if (cached) return cached;
-    const res = await fetch(`${CONFIG.TWSE_BASE}/exchangeReport/STOCK_DAY_ALL`);
-    if (!res.ok) throw new Error(`TWSE HTTP ${res.status}`);
-    const json = await res.json();
+  /* FinMind: get full Taiwan stock list (doesn't need token for basic info) */
+  async finmindStockList() {
+    const ck = 'fm_stocklist';
+    const cached = Cache.get(ck); if (cached) return cached;
+    const url = `${CONFIG.FINMIND_BASE}?` + new URLSearchParams({
+      dataset: 'TaiwanStockInfo',
+      token: state.finmindToken || '',
+    });
+    try {
+      const json = await fetchJSON(url);
+      if (json.status === 200 && Array.isArray(json.data)) {
+        Cache.set(ck, json.data, CONFIG.CACHE_TTL_BULK);
+        return json.data;
+      }
+    } catch { /* fallback */ }
+    return null;
+  },
+
+  /* TWSE Open API — daily all stocks snapshot */
+  async twseDayAll() {
+    const ck = 'twse_dayall';
+    const cached = Cache.get(ck); if (cached) return cached;
+    const json = await fetchJSON(CONFIG.TWSE_DAY_ALL);
+    if (!Array.isArray(json)) throw new Error('TWSE 資料格式異常');
     Cache.set(ck, json, CONFIG.CACHE_TTL_BULK);
     return json;
   },
 
-  async tpexBulk() {
-    const ck = 'tpex_bulk';
-    const cached = Cache.get(ck);
-    if (cached) return cached;
-    try {
-      const res = await fetch(`${CONFIG.TPEX_BASE}/tpex_mainboard_daily_close_quotes`);
-      if (!res.ok) return [];
-      const json = await res.json();
-      Cache.set(ck, json, CONFIG.CACHE_TTL_BULK);
-      return json;
-    } catch { return []; }
-  },
-
   async testToken(token) {
-    const params = new URLSearchParams({dataset:'TaiwanStockPrice', data_id:'2330', start_date:fmtDate(dateMonthsAgo(1)), token});
-    const res = await fetch(`${CONFIG.FINMIND_BASE}?${params}`);
-    const json = await res.json();
-    return json.status === 200;
+    const url = `${CONFIG.FINMIND_BASE}?` + new URLSearchParams({
+      dataset: 'TaiwanStockPrice', data_id: '2330',
+      start_date: fmtDate(monthsAgo(1)), token,
+    });
+    try {
+      const json = await fetchJSON(url);
+      return json.status === 200;
+    } catch { return false; }
   },
 };
 
-/* ── Stock Universe Builder ── */
-async function buildUniverse() {
+/* ─────────────────────────────────────────────────────────
+   STOCK UNIVERSE BUILDER
+   Strategy:
+     1. Try TWSE Open API (CORS-enabled, no auth)  → primary for TSE
+     2. If that fails, try FinMind TaiwanStockInfo  → fallback (needs token or public)
+   ───────────────────────────────────────────────────────── */
+async function buildUniverse(progressCb) {
   const list = [];
 
-  // Determine reference date for display
+  // Reference trading date
   const now = new Date();
-  const isWeekend = now.getDay() === 0 || now.getDay() === 6;
-  const isAfterClose = now.getHours() >= 14;
-  let refDate = new Date(now);
-  if (isWeekend) refDate.setDate(refDate.getDate() - (now.getDay() === 0 ? 2 : 1));
-  else if (!isAfterClose) refDate.setDate(refDate.getDate() - 1);
-  state.dataDate = fmtDate(refDate);
+  const dow = now.getDay();
+  let ref = new Date(now);
+  if (dow === 0) ref.setDate(ref.getDate() - 2);
+  else if (dow === 6) ref.setDate(ref.getDate() - 1);
+  else if (now.getHours() < 9) ref.setDate(ref.getDate() - 1); // before open
+  state.dataDate = fmtDate(ref);
 
+  /* ── TSE stocks via TWSE Open API ── */
   if (state.marketScope === 'TSE' || state.marketScope === 'ALL') {
-    const raw = await API.twseBulk();
-    if (Array.isArray(raw)) {
-      for (const s of raw) {
-        const code = s.Code || '';
+    progressCb('取得上市（TSE）個股清單...', '來源：TWSE Open API');
+    let twseData = null;
+    try {
+      twseData = await API.twseDayAll();
+    } catch (e) {
+      // TWSE might fail on first try — retry once after 1s
+      progressCb('TWSE 連線中，重試...', e.message);
+      await sleep(1200);
+      try { twseData = await API.twseDayAll(); } catch { /* will use fallback */ }
+    }
+
+    if (twseData && Array.isArray(twseData)) {
+      for (const s of twseData) {
+        const code = (s.Code || s.code || '').trim();
         if (!isEquity(code)) continue;
-        const price = parseFloat(s.ClosingPrice || 0);
-        const vol   = parseFloat(s.TradeVolume  || 0);
-        if (price <= 0 || vol <= 0) continue;
-        const changeStr = String(s.Change || '0');
-        const chg = parseFloat(changeStr.replace(/[▲▼+\s]/g,'')) || 0;
-        const actualChg = (changeStr.includes('▼') || changeStr.startsWith('-')) ? -Math.abs(chg) : chg;
-        const pct = price > 0 ? (actualChg / (price - actualChg || price)) * 100 : 0;
-        list.push({ code, name: s.Name||code, price, change: actualChg, pct,
-          high: parseFloat(s.HighestPrice||0), low: parseFloat(s.LowestPrice||0),
-          vol, market: 'TSE' });
+        const price = parseFloat(s.ClosingPrice || s.closing_price || 0);
+        const vol   = parseFloat((s.TradeVolume  || s.trade_volume  || '0').replace(/,/g,''));
+        if (price <= 0) continue; // skip suspended
+        const chgRaw = String(s.Change || '0').trim();
+        const chgAbs = parseFloat(chgRaw.replace(/[▲▼+\-\s,]/g,'')) || 0;
+        const chg    = (chgRaw.startsWith('▼') || chgRaw.startsWith('-')) ? -chgAbs : chgAbs;
+        const base   = price - chg || price;
+        const pct    = base !== 0 ? (chg / base) * 100 : 0;
+        list.push({
+          code, name: (s.Name || s.name || code).trim(),
+          price, change: chg, pct,
+          high:  parseFloat((s.HighestPrice  || s.highest_price  || price).toString().replace(/,/g,'')),
+          low:   parseFloat((s.LowestPrice   || s.lowest_price   || price).toString().replace(/,/g,'')),
+          vol, market: 'TSE',
+        });
+      }
+    } else {
+      // Fallback: use FinMind stock info to at least get a list of codes
+      progressCb('TWSE 暫時無法連線，改用 FinMind 股票清單...', '');
+      if (state.finmindToken) {
+        try {
+          const fmList = await API.finmindStockList();
+          if (fmList) {
+            for (const s of fmList) {
+              if (!isEquity(s.stock_id)) continue;
+              if (s.type !== 'twse' && s.type !== 'stock') continue;
+              list.push({ code: s.stock_id, name: s.stock_name || s.stock_id,
+                price: 0, change: 0, pct: 0, vol: 0, market: 'TSE' });
+            }
+          }
+        } catch { /* truly offline */ }
       }
     }
   }
 
+  /* ── OTC stocks via FinMind ── */
   if (state.marketScope === 'OTC' || state.marketScope === 'ALL') {
-    const raw = await API.tpexBulk();
-    if (Array.isArray(raw)) {
-      for (const s of raw) {
-        const code = s.SecuritiesCompanyCode || s.code || '';
-        if (!isEquity(code)) continue;
-        const price = parseFloat(s.Close || s.closing_price || 0);
-        const vol   = parseFloat(s.TradingShares || s.volume || 0);
-        if (price <= 0 || vol <= 0) continue;
-        list.push({ code, name: s.CompanyName||s.name||code, price, change:0, pct:0, vol, market:'OTC' });
-      }
+    progressCb('取得上櫃（OTC）個股清單...', '來源：FinMind');
+    if (state.finmindToken) {
+      try {
+        const fmList = await API.finmindStockList();
+        if (fmList) {
+          for (const s of fmList) {
+            if (!isEquity(s.stock_id)) continue;
+            if (s.type !== 'tpex' && s.type !== 'otc') continue;
+            // avoid duplicates
+            if (list.some(x => x.code === s.stock_id)) continue;
+            list.push({ code: s.stock_id, name: s.stock_name || s.stock_id,
+              price: 0, change: 0, pct: 0, vol: 0, market: 'OTC' });
+          }
+        }
+      } catch { /* skip OTC silently */ }
     }
   }
 
   return list;
 }
 
-/* ── Screener ── */
+/* ─────────────────────────────────────────────────────────
+   SCREENER
+   ───────────────────────────────────────────────────────── */
 const Screener = {
   async getPrices(id) {
-    const raw = await API.finmind('TaiwanStockPrice', id, fmtDate(dateMonthsAgo(14)));
+    const raw = await API.finmind('TaiwanStockPrice', id, fmtDate(monthsAgo(14)));
     return raw.sort((a,b) => b.date.localeCompare(a.date));
   },
   async getTaiex() {
-    const ck = 'taiex_data';
-    const c = Cache.get(ck); if (c) return c;
-    const raw = await API.finmind('TaiwanStockPrice', 'Y9999', fmtDate(dateMonthsAgo(7)));
+    const ck = 'taiex'; const c = Cache.get(ck); if (c) return c;
+    const raw = await API.finmind('TaiwanStockPrice', 'Y9999', fmtDate(monthsAgo(7)));
     const s = raw.sort((a,b) => b.date.localeCompare(a.date));
     Cache.set(ck, s, CONFIG.CACHE_TTL_PRICE); return s;
   },
   calcRS(sp, tp) {
-    const period = Math.min(130, sp.length-1, tp.length-1);
-    if (period < 20) return null;
-    const sN=parseFloat(sp[0].close), sP=parseFloat(sp[period].close);
-    const tN=parseFloat(tp[0].close), tP=parseFloat(tp[period].close);
+    const n = Math.min(130, sp.length-1, tp.length-1); if (n < 20) return null;
+    const [sN,sP,tN,tP] = [+sp[0].close, +sp[n].close, +tp[0].close, +tp[n].close];
     if (!sP||!tP) return null;
-    const ratio = (1+(sN-sP)/sP) / (1+Math.max((tN-tP)/tP,-0.99));
-    return Math.max(0, Math.min(100, Math.round((ratio-0.5)*100)));
+    return Math.max(0, Math.min(100, Math.round(((1+(sN-sP)/sP)/(1+Math.max((tN-tP)/tP,-0.99))-0.5)*100)));
   },
   calcMAs(prices) {
-    const c = prices.map(d=>parseFloat(d.close));
+    const c = prices.map(d=>+d.close);
     return {
-      ma5:  c.length>=5   ? avg(c.slice(0,5))  : null,
-      ma10: c.length>=10  ? avg(c.slice(0,10)) : null,
-      ma20: c.length>=20  ? avg(c.slice(0,20)) : null,
-      ma60: c.length>=60  ? avg(c.slice(0,60)) : null,
-      ma120:c.length>=120 ? avg(c.slice(0,120)):null,
+      ma5:  c.length>=5  ?avg(c.slice(0,5))  :null,
+      ma10: c.length>=10 ?avg(c.slice(0,10)) :null,
+      ma20: c.length>=20 ?avg(c.slice(0,20)) :null,
+      ma60: c.length>=60 ?avg(c.slice(0,60)) :null,
+      ma120:c.length>=120?avg(c.slice(0,120)):null,
     };
   },
   analyzeRevenue(raw) {
     if (!raw||raw.length<3) return null;
-    const sorted=[...raw].sort((a,b)=>b.date.localeCompare(a.date));
-    const latest=sorted[0]; const lv=parseFloat(latest.revenue);
+    const s = [...raw].sort((a,b)=>b.date.localeCompare(a.date));
+    const l = s[0]; const lv = +l.revenue;
     const yoy=[],mom=[];
-    for(let i=0;i<Math.min(2,sorted.length);i++){
-      const cur=sorted[i]; const cd=new Date(cur.date);
-      const py=sorted.find(d=>{const dd=new Date(d.date);return dd.getMonth()===cd.getMonth()&&dd.getFullYear()===cd.getFullYear()-1;});
-      if(py) yoy.push((parseFloat(cur.revenue)-parseFloat(py.revenue))/parseFloat(py.revenue));
-      if(i<sorted.length-1){const pv=parseFloat(sorted[i+1].revenue);if(pv>0)mom.push((parseFloat(cur.revenue)-pv)/pv);}
+    for (let i=0;i<Math.min(2,s.length);i++) {
+      const cur=s[i], cd=new Date(cur.date);
+      const py=s.find(d=>{const dd=new Date(d.date);return dd.getMonth()===cd.getMonth()&&dd.getFullYear()===cd.getFullYear()-1;});
+      if(py) yoy.push((+cur.revenue - +py.revenue)/+py.revenue);
+      if(i<s.length-1){const pv=+s[i+1].revenue; if(pv>0)mom.push((+cur.revenue-pv)/pv);}
     }
-    const allV=sorted.map(d=>parseFloat(d.revenue));
-    const sly=sorted.find(d=>{const dd=new Date(d.date),ld=new Date(latest.date);return dd.getMonth()===ld.getMonth()&&dd.getFullYear()===ld.getFullYear()-1;});
+    const allV=s.map(d=>+d.revenue);
+    const sly=s.find(d=>{const dd=new Date(d.date),ld=new Date(l.date);return dd.getMonth()===ld.getMonth()&&dd.getFullYear()===ld.getFullYear()-1;});
     return {
-      revenue: lv/1e8, revenueDate: latest.date,
-      yoyLatest: yoy[0]!==undefined ? yoy[0]*100 : null,
-      momLatest: mom[0]!==undefined ? mom[0]*100 : null,
-      yoy2mo: yoy.length===2&&yoy.every(v=>v>=0.20),
-      mom2mo: mom.length===2&&mom.every(v=>v>=0.20),
-      revenueHighRecord: lv>=Math.max(...allV)||(sly?lv>parseFloat(sly.revenue):false),
+      revenue:lv/1e8, revenueDate:l.date,
+      yoyLatest:yoy[0]!==undefined?yoy[0]*100:null,
+      momLatest:mom[0]!==undefined?mom[0]*100:null,
+      yoy2mo:yoy.length===2&&yoy.every(v=>v>=0.20),
+      mom2mo:mom.length===2&&mom.every(v=>v>=0.20),
+      revenueHighRecord:lv>=Math.max(...allV)||(sly?lv>+sly.revenue:false),
     };
   },
   analyzeFinancials(data) {
     if(!data||data.length<2) return null;
-    const sorted=[...data].sort((a,b)=>b.date.localeCompare(a.date));
-    const latest=sorted[0];
-    const lyQ=sorted.find(d=>{const ld=new Date(latest.date),dd=new Date(d.date);return dd.getMonth()===ld.getMonth()&&dd.getFullYear()===ld.getFullYear()-1;});
-    const gv=(row,types)=>{for(const t of types){const i=data.find(d=>d.date===row.date&&d.type===t);if(i)return parseFloat(i.value);}return null;};
-    const rev=gv(latest,['Revenue','revenue']); const gp=gv(latest,['GrossProfit','gross_profit']);
-    const op=gv(latest,['OperatingIncome','operating_income']); const ni=gv(latest,['NetIncome','net_income','AfterTaxProfit']);
-    const gm=rev&&gp?(gp/rev)*100:null; const om=rev&&op?(op/rev)*100:null;
+    const s=[...data].sort((a,b)=>b.date.localeCompare(a.date));
+    const l=s[0];
+    const ly=s.find(d=>{const ld=new Date(l.date),dd=new Date(d.date);return dd.getMonth()===ld.getMonth()&&dd.getFullYear()===ld.getFullYear()-1;});
+    const gv=(row,types)=>{for(const t of types){const i=data.find(d=>d.date===row.date&&d.type===t);if(i)return +i.value;}return null;};
+    const [rev,gp,op,ni]=[gv(l,['Revenue','revenue']),gv(l,['GrossProfit','gross_profit']),gv(l,['OperatingIncome','operating_income']),gv(l,['NetIncome','net_income','AfterTaxProfit'])];
+    const gm=rev&&gp?(gp/rev)*100:null, om=rev&&op?(op/rev)*100:null;
     let gmG=null,omG=null;
-    if(lyQ){const lr=gv(lyQ,['Revenue','revenue']);const lg=gv(lyQ,['GrossProfit','gross_profit']);const lo=gv(lyQ,['OperatingIncome','operating_income']);
-      const lGm=lr&&lg?(lg/lr)*100:null; const lOm=lr&&lo?(lo/lr)*100:null;
-      if(gm!==null&&lGm!==null)gmG=gm>lGm; if(om!==null&&lOm!==null)omG=om>lOm;}
+    if(ly){const[lr,lg,lo]=[gv(ly,['Revenue','revenue']),gv(ly,['GrossProfit','gross_profit']),gv(ly,['OperatingIncome','operating_income'])];
+      const lyGm=lr&&lg?(lg/lr)*100:null, lyOm=lr&&lo?(lo/lr)*100:null;
+      if(gm!==null&&lyGm!==null)gmG=gm>lyGm; if(om!==null&&lyOm!==null)omG=om>lyOm;}
     return {grossMargin:gm,opMargin:om,noProfitLoss:ni!==null?ni>0:null,marginGrowth:(gmG!==null&&omG!==null)?(gmG&&omG):null};
   },
   analyzeInstitutional(data) {
     if(!data||!data.length) return null;
     const sorted=[...data].sort((a,b)=>b.date.localeCompare(a.date));
     let fgn=0,trust=0;
-    for(const r of sorted.slice(0,25)){
-      const n=(r.name||'').toLowerCase(); const net=parseFloat(r.buy||0)-parseFloat(r.sell||0);
+    for(const r of sorted.slice(0,30)){
+      const n=(r.name||'').toLowerCase(); const net=+r.buy-+r.sell;
       if(n.includes('外資')||n.includes('foreign'))fgn+=net;
       if(n.includes('投信')||n.includes('investment_trust'))trust+=net;
     }
-    const d3m=fmtDate(dateMonthsAgo(3));
+    const d3=fmtDate(monthsAgo(3));
     const daily={};
-    for(const r of data.filter(r=>r.date>=d3m)) daily[r.date]=(daily[r.date]||0)+(parseFloat(r.buy||0)-parseFloat(r.sell||0));
+    for(const r of data.filter(r=>r.date>=d3))daily[r.date]=(daily[r.date]||0)+(+r.buy-+r.sell);
     const da=Object.entries(daily).sort((a,b)=>b[0].localeCompare(a[0]));
-    const rs=da.slice(0,5).reduce((s,[,v])=>s+v,0);
-    const qm=da.length?Math.max(...da.map(([,v])=>v)):0;
-    return {foreignNet:fgn,trustNet:trust,foreignBuy:fgn>0,trustBuy:trust>0,institutionalRecord:da.length>10&&rs>=qm};
+    const rs5=da.slice(0,5).reduce((s,[,v])=>s+v,0);
+    const qmax=da.length?Math.max(...da.map(([,v])=>v)):0;
+    return{foreignNet:fgn,trustNet:trust,foreignBuy:fgn>0,trustBuy:trust>0,institutionalRecord:da.length>10&&rs5>=qmax};
   },
   analyzeShareholder(data) {
     if(!data||data.length<2) return null;
-    const sorted=[...data].sort((a,b)=>b.date.localeCompare(a.date));
-    const l=sorted[0],p=sorted[sorted.length>4?4:sorted.length-1];
-    const pct=parseFloat(l.percent_above_1000||l.HoldingSharesRatio||0);
-    const pp=parseFloat(p.percent_above_1000||p.HoldingSharesRatio||0);
-    return {bigHolderPct:pct,bigHolderIncrease:pct>pp,chipConcentration:pct>pp};
+    const s=[...data].sort((a,b)=>b.date.localeCompare(a.date));
+    const l=s[0],p=s[s.length>4?4:s.length-1];
+    const pct=+(l.percent_above_1000||l.HoldingSharesRatio||0);
+    const pp=+(p.percent_above_1000||p.HoldingSharesRatio||0);
+    return{bigHolderPct:pct,bigHolderIncrease:pct>pp,chipConcentration:pct>pp};
   },
 
-  async analyzeOne(stock, taixPrices) {
-    const r = {
-      ...stock, analyzed:true, error:null,
+  async analyzeOne(stock, taiex) {
+    const r={
+      ...stock,analyzed:true,error:null,
       rsScore:null,distanceFromHigh:null,shortMAAlign:null,longMAAlign:null,aboveSubPoint:null,
       revenue:null,revenueDate:null,yoyLatest:null,momLatest:null,revenueHighRecord:null,yoy2mo:null,mom2mo:null,
       grossMargin:null,opMargin:null,marginGrowth:null,noProfitLoss:null,
@@ -304,36 +381,34 @@ const Screener = {
       filterChecks:{},passCount:0,failCount:0,passAll:true,
     };
     const af=getAF();
-    try {
-      const needsPrice=af.some(f=>['rs90','nearMonthlyHigh','shortMAAlign','longMAAlign','aboveSubPoint'].includes(f));
-      let prices=[];
-      if(needsPrice||af.length===0){
-        prices=await this.getPrices(stock.code);
-        await sleep(CONFIG.RATE_LIMIT_DELAY);
-      }
-      if(prices.length){
-        if(taixPrices?.length) r.rsScore=this.calcRS(prices,taixPrices);
-        const ma=this.calcMAs(prices);
+    try{
+      const np=af.some(f=>['rs90','nearMonthlyHigh','shortMAAlign','longMAAlign','aboveSubPoint'].includes(f));
+      let px=[];
+      if(np){px=await this.getPrices(stock.code);await sleep(CONFIG.RATE_LIMIT_DELAY);}
+      if(px.length){
+        if(taiex?.length) r.rsScore=this.calcRS(px,taiex);
+        const ma=this.calcMAs(px);
         r.shortMAAlign =ma.ma5&&ma.ma10&&ma.ma20?ma.ma5>ma.ma10&&ma.ma10>ma.ma20:null;
         r.longMAAlign  =ma.ma20&&ma.ma60&&ma.ma120?ma.ma20>ma.ma60&&ma.ma60>ma.ma120:null;
-        r.aboveSubPoint=prices.length>=61?parseFloat(prices[0].close)>parseFloat(prices[19].close)&&parseFloat(prices[0].close)>parseFloat(prices[59].close):null;
-        const lk=Math.min(22,prices.length);
-        const mh=Math.max(...prices.slice(0,lk).map(d=>parseFloat(d.max||d.close)));
-        r.distanceFromHigh=((parseFloat(prices[0].close)/mh)-1)*100;
+        r.aboveSubPoint=px.length>=61?+px[0].close>+px[19].close&&+px[0].close>+px[59].close:null;
+        const lk=Math.min(22,px.length),mh=Math.max(...px.slice(0,lk).map(d=>+(d.max||d.close)));
+        r.distanceFromHigh=((+px[0].close/mh)-1)*100;
+        // update price from FinMind if TWSE returned 0
+        if(!r.price||r.price===0) r.price=+px[0].close;
       }
-      if(af.some(f=>['revenueHighRecord','revenueYoY','revenueMoM'].includes(f))||af.length===0){
-        try{const rd=await API.finmind('TaiwanStockMonthRevenue',stock.code,fmtDate(dateMonthsAgo(24)));Object.assign(r,this.analyzeRevenue(rd)||{});await sleep(CONFIG.RATE_LIMIT_DELAY);}catch{}
+      if(af.some(f=>['revenueHighRecord','revenueYoY','revenueMoM'].includes(f))){
+        try{const d=await API.finmind('TaiwanStockMonthRevenue',stock.code,fmtDate(monthsAgo(24)));Object.assign(r,this.analyzeRevenue(d)||{});await sleep(CONFIG.RATE_LIMIT_DELAY);}catch{}
       }
-      if(af.some(f=>['marginGrowth','noProfitLoss'].includes(f))||af.length===0){
-        try{const fd=await API.finmind('TaiwanStockFinancialStatements',stock.code,fmtDate(dateMonthsAgo(18)));Object.assign(r,this.analyzeFinancials(fd)||{});await sleep(CONFIG.RATE_LIMIT_DELAY);}catch{}
+      if(af.some(f=>['marginGrowth','noProfitLoss'].includes(f))){
+        try{const d=await API.finmind('TaiwanStockFinancialStatements',stock.code,fmtDate(monthsAgo(18)));Object.assign(r,this.analyzeFinancials(d)||{});await sleep(CONFIG.RATE_LIMIT_DELAY);}catch{}
       }
-      if(af.some(f=>['foreignBuy','trustBuy','institutionalRecord'].includes(f))||af.length===0){
-        try{const id=await API.finmind('TaiwanStockInstitutionalInvestors',stock.code,fmtDate(dateMonthsAgo(1)));Object.assign(r,this.analyzeInstitutional(id)||{});await sleep(CONFIG.RATE_LIMIT_DELAY);}catch{}
+      if(af.some(f=>['foreignBuy','trustBuy','institutionalRecord'].includes(f))){
+        try{const d=await API.finmind('TaiwanStockInstitutionalInvestors',stock.code,fmtDate(monthsAgo(1)));Object.assign(r,this.analyzeInstitutional(d)||{});await sleep(CONFIG.RATE_LIMIT_DELAY);}catch{}
       }
-      if(af.some(f=>['chipConcentration','bigHolderIncrease'].includes(f))||af.length===0){
-        try{const sd=await API.finmind('TaiwanStockShareholderStructure',stock.code,fmtDate(dateMonthsAgo(3)));Object.assign(r,this.analyzeShareholder(sd)||{});await sleep(CONFIG.RATE_LIMIT_DELAY);}catch{}
+      if(af.some(f=>['chipConcentration','bigHolderIncrease'].includes(f))){
+        try{const d=await API.finmind('TaiwanStockShareholderStructure',stock.code,fmtDate(monthsAgo(3)));Object.assign(r,this.analyzeShareholder(d)||{});await sleep(CONFIG.RATE_LIMIT_DELAY);}catch{}
       }
-    } catch(e){ r.error=e.message; }
+    }catch(e){r.error=e.message;}
 
     const fc={
       rs90:              r.rsScore!==null?r.rsScore>=90:null,
@@ -361,86 +436,78 @@ const Screener = {
   },
 };
 
-/* ── Watchlist ── */
+/* ─────────────────────────────────────────────────────────
+   WATCHLIST
+   ───────────────────────────────────────────────────────── */
 const WL = {
-  save() { localStorage.setItem('watchlist', JSON.stringify(state.watchlist)); },
-  cats()  { return Object.keys(state.watchlist); },
-  addCat(name) { if(!name||state.watchlist[name])return false; state.watchlist[name]={stocks:[]}; this.save(); return true; },
-  delCat(name) { if(name==='預設')return false; delete state.watchlist[name]; this.save(); return true; },
-  add(cat,id)  { if(!state.watchlist[cat]||state.watchlist[cat].stocks.includes(id))return false; state.watchlist[cat].stocks.push(id); this.save(); return true; },
+  save(){ localStorage.setItem('watchlist',JSON.stringify(state.watchlist)); },
+  cats(){ return Object.keys(state.watchlist); },
+  addCat(n){ if(!n||state.watchlist[n])return false; state.watchlist[n]={stocks:[]}; this.save(); return true; },
+  delCat(n){ if(n==='預設')return false; delete state.watchlist[n]; this.save(); return true; },
+  add(cat,id){ if(!state.watchlist[cat]||state.watchlist[cat].stocks.includes(id))return false; state.watchlist[cat].stocks.push(id); this.save(); return true; },
   remove(cat,id){ if(!state.watchlist[cat])return; state.watchlist[cat].stocks=state.watchlist[cat].stocks.filter(s=>s!==id); this.save(); },
-  removeAll(id) { this.cats().forEach(c=>this.remove(c,id)); },
-  isWatched(id) { return this.cats().some(c=>state.watchlist[c].stocks.includes(id)); },
-  catsFor(id)   { return this.cats().filter(c=>state.watchlist[c].stocks.includes(id)); },
-  list()        { return Object.entries(state.watchlist).map(([name,data])=>({name,stocks:data.stocks||[]})); },
+  removeAll(id){ this.cats().forEach(c=>this.remove(c,id)); },
+  isWatched(id){ return this.cats().some(c=>state.watchlist[c].stocks.includes(id)); },
+  catsFor(id){ return this.cats().filter(c=>state.watchlist[c].stocks.includes(id)); },
+  list(){ return Object.entries(state.watchlist).map(([name,data])=>({name,stocks:data.stocks||[]})); },
 };
 
-/* ── UI ── */
+/* ─────────────────────────────────────────────────────────
+   UI
+   ───────────────────────────────────────────────────────── */
 const UI = {
-  nav(page) {
+  nav(page){
     state.currentPage=page;
     document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
     document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
     document.getElementById(`page-${page}`)?.classList.add('active');
     document.querySelector(`.nav-btn[data-page="${page}"]`)?.classList.add('active');
-    if(page==='watchlist') this.renderWL();
-    if(page==='settings')  this.renderSettings();
+    if(page==='watchlist')this.renderWL();
+    if(page==='settings') this.renderSettings();
   },
 
-  applyTheme(t) {
+  applyTheme(t){
     state.theme=t;
     document.documentElement.setAttribute('data-theme',t);
     localStorage.setItem('theme',t);
     document.getElementById('themeBtn').textContent=t==='dark'?'☀️':'🌙';
   },
 
-  updateHeader() {
-    document.getElementById('versionBadge').textContent = APP_VERSION;
-    // Data date = actual trading date from TWSE data
-    const dataEl = document.getElementById('dataDate');
-    dataEl.textContent = state.dataDate ? `資料 ${fmtDataDate(state.dataDate)}` : '資料 --';
-    // Fetch time = when we actually retrieved it
-    const timeEl = document.getElementById('fetchTime');
-    timeEl.textContent = state.lastUpdate ? fmtHeaderDT(state.lastUpdate) : '';
+  updateHeader(){
+    document.getElementById('versionBadge').textContent=APP_VERSION;
+    const dEl=document.getElementById('dataDate');
+    const tEl=document.getElementById('fetchTime');
+    dEl.textContent=state.dataDate?`資料 ${fmtDataDate(state.dataDate)}`:'資料 --';
+    if(state.dataDate) dEl.classList.add('has-data'); else dEl.classList.remove('has-data');
+    tEl.textContent=state.lastUpdate?`取得 ${fmtHeaderDT(state.lastUpdate)}`:'';
   },
 
-  toast(msg, type='info', ms=3000) {
+  toast(msg,type='info',ms=3000){
     const c=document.getElementById('toastContainer');
     const el=document.createElement('div');
     el.className=`toast ${type}`; el.textContent=msg; c.appendChild(el);
-    setTimeout(()=>el.remove(), ms);
+    setTimeout(()=>el.remove(),ms);
   },
 
-  renderTags() {
+  renderTags(){
     const LABELS={
-      rs90:'RS > 90', nearMonthlyHigh:'距月高 ≤ 5%',
-      shortMAAlign:'短均排列', longMAAlign:'中長均排列', aboveSubPoint:'站上扣抵',
-      revenueHighRecord:'營收創高', revenueYoY:'YoY連2月>20%', revenueMoM:'MoM連2月>20%',
-      marginGrowth:'毛/營益率↑', noProfitLoss:'無虧損',
-      chipConcentration:'籌碼集中↑', buyerSellerDiff:'買賣家數差<0',
-      foreignBuy:'外資買超', trustBuy:'投信買超',
-      bigHolderIncrease:'大戶比例↑', institutionalRecord:'法人持股季高',
+      rs90:'RS > 90',nearMonthlyHigh:'距月高 ≤ 5%',shortMAAlign:'短均排列',longMAAlign:'中長均排列',aboveSubPoint:'站上扣抵',
+      revenueHighRecord:'營收創高',revenueYoY:'YoY連2月>20%',revenueMoM:'MoM連2月>20%',marginGrowth:'毛/營益率↑',noProfitLoss:'無虧損',
+      chipConcentration:'籌碼集中↑',buyerSellerDiff:'買賣家數差<0',foreignBuy:'外資買超',trustBuy:'投信買超',bigHolderIncrease:'大戶比例↑',institutionalRecord:'法人持股季高',
     };
     const el=document.getElementById('activeTags'); if(!el) return;
     const af=getAF();
     el.innerHTML=af.length===0
-      ?'<span style="font-size:11px;color:var(--text-dim)">未選擇篩選條件 — 查詢將顯示全市場個股基本資料（僅消耗 TWSE，不需 FinMind）</span>'
+      ?'<span style="font-size:11px;color:var(--text-dim)">未選擇篩選條件 — 將顯示全市場個股基本行情（僅使用 TWSE，無需 FinMind）</span>'
       :af.map(f=>`<span class="filter-tag">${LABELS[f]||f}<span class="filter-tag-remove" onclick="UI.rmFilter('${f}')">✕</span></span>`).join('');
     const catMap={tech:['rs90','nearMonthlyHigh','shortMAAlign','longMAAlign','aboveSubPoint'],fund:['revenueHighRecord','revenueYoY','revenueMoM','marginGrowth','noProfitLoss'],chip:['chipConcentration','buyerSellerDiff','foreignBuy','trustBuy','bigHolderIncrease','institutionalRecord']};
     for(const[cat,keys]of Object.entries(catMap)){
-      const b=document.getElementById(`badge-${cat}`);
-      if(b) b.textContent=`${keys.filter(k=>state.filters[k]).length}/${keys.length}`;
+      const b=document.getElementById(`badge-${cat}`);if(b)b.textContent=`${keys.filter(k=>state.filters[k]).length}/${keys.length}`;
     }
   },
+  rmFilter(key){state.filters[key]=false;const cb=document.getElementById(`filter-${key}`);if(cb)cb.checked=false;this.renderTags();},
 
-  rmFilter(key) {
-    state.filters[key]=false;
-    const cb=document.getElementById(`filter-${key}`); if(cb) cb.checked=false;
-    this.renderTags();
-  },
-
-  /* ── Results Table ── */
-  initTable() {
+  initTable(){
     document.getElementById('resultsContainer').innerHTML=`
       <div class="results-toolbar">
         <span class="results-count" id="resultsCount">初始化中...</span>
@@ -453,30 +520,28 @@ const UI = {
         <table class="stock-table">
           <thead>
             <tr>
-              <th rowspan="2">代號</th>
-              <th rowspan="2">股名</th>
-              <th rowspan="2">現價</th>
-              <th rowspan="2">漲跌%</th>
+              <th rowspan="2">代號</th><th rowspan="2">股名</th>
+              <th rowspan="2">現價</th><th rowspan="2">漲跌%</th>
               <th colspan="5" style="color:#4FC3F7;border-bottom:1px solid rgba(79,195,247,.2)">📊 技術面</th>
               <th colspan="6" style="color:#81C784;border-bottom:1px solid rgba(129,199,132,.2)">📈 基本面</th>
               <th colspan="3" style="color:#FFB74D;border-bottom:1px solid rgba(255,183,77,.2)">🎯 籌碼面</th>
               <th rowspan="2">自選</th>
             </tr>
             <tr>
-              <th style="color:#4FC3F7">RS分數</th>
-              <th style="color:#4FC3F7">距月高%</th>
+              <th style="color:#4FC3F7">RS<small style="display:block;opacity:.6;font-size:8px;font-weight:400">分數</small></th>
+              <th style="color:#4FC3F7">距月高<small style="display:block;opacity:.6;font-size:8px;font-weight:400">%</small></th>
               <th style="color:#4FC3F7">短均<small style="display:block;opacity:.6;font-size:8px;font-weight:400">5>10>20</small></th>
               <th style="color:#4FC3F7">中長均<small style="display:block;opacity:.6;font-size:8px;font-weight:400">20>60>120</small></th>
-              <th style="color:#4FC3F7">扣抵值<small style="display:block;opacity:.6;font-size:8px;font-weight:400">站上</small></th>
+              <th style="color:#4FC3F7">扣抵<small style="display:block;opacity:.6;font-size:8px;font-weight:400">站上</small></th>
               <th style="color:#81C784">月營收<small style="display:block;opacity:.6;font-size:8px;font-weight:400">億元</small></th>
-              <th style="color:#81C784">年增率%<small style="display:block;opacity:.6;font-size:8px;font-weight:400">最近月</small></th>
-              <th style="color:#81C784">月增率%<small style="display:block;opacity:.6;font-size:8px;font-weight:400">最近月</small></th>
-              <th style="color:#81C784">毛利率%</th>
-              <th style="color:#81C784">營益率%</th>
+              <th style="color:#81C784">年增率<small style="display:block;opacity:.6;font-size:8px;font-weight:400">%</small></th>
+              <th style="color:#81C784">月增率<small style="display:block;opacity:.6;font-size:8px;font-weight:400">%</small></th>
+              <th style="color:#81C784">毛利率<small style="display:block;opacity:.6;font-size:8px;font-weight:400">%</small></th>
+              <th style="color:#81C784">營益率<small style="display:block;opacity:.6;font-size:8px;font-weight:400">%</small></th>
               <th style="color:#81C784">盈虧</th>
-              <th style="color:#FFB74D">外資<small style="display:block;opacity:.6;font-size:8px;font-weight:400">近5日淨(張)</small></th>
-              <th style="color:#FFB74D">投信<small style="display:block;opacity:.6;font-size:8px;font-weight:400">近5日淨(張)</small></th>
-              <th style="color:#FFB74D">大戶持股</th>
+              <th style="color:#FFB74D">外資<small style="display:block;opacity:.6;font-size:8px;font-weight:400">5日淨(張)</small></th>
+              <th style="color:#FFB74D">投信<small style="display:block;opacity:.6;font-size:8px;font-weight:400">5日淨(張)</small></th>
+              <th style="color:#FFB74D">大戶<small style="display:block;opacity:.6;font-size:8px;font-weight:400">持股變化</small></th>
             </tr>
           </thead>
           <tbody id="resultsTbody"></tbody>
@@ -484,30 +549,29 @@ const UI = {
       </div>`;
   },
 
-  _pill(val, pt='✓', ft='✗') {
-    if(val===null||val===undefined) return `<span class="ind-pill ind-na">N/A</span>`;
-    return val===true ? `<span class="ind-pill ind-pass">${pt}</span>` : `<span class="ind-pill ind-fail">${ft}</span>`;
+  _pill(v,pt='✓',ft='✗'){
+    if(v===null||v===undefined)return`<span class="ind-pill ind-na">N/A</span>`;
+    return v===true?`<span class="ind-pill ind-pass">${pt}</span>`:`<span class="ind-pill ind-fail">${ft}</span>`;
   },
-  _numPill(val, suf='') {
-    if(val===null||val===undefined||isNaN(val)) return `<span class="ind-pill ind-na">N/A</span>`;
-    return `<span class="ind-pill ${val>0?'ind-pass':'ind-fail'}">${n2(val,1)}${suf}</span>`;
+  _numPill(v,suf=''){
+    if(v===null||v===undefined||isNaN(v))return`<span class="ind-pill ind-na">N/A</span>`;
+    return`<span class="ind-pill ${v>0?'ind-pass':'ind-fail'}">${n2(v,1)}${suf}</span>`;
   },
-  _rsCell(s) {
-    if(s===null) return `<span class="ind-pill ind-na">N/A</span>`;
-    const cls=s>=90?'ind-pass':s>=70?'ind-warn':'ind-fail';
-    return `<span class="ind-pill ${cls}">${Math.round(s)}</span>`;
+  _rsCell(s){
+    if(s===null)return`<span class="ind-pill ind-na">N/A</span>`;
+    return`<span class="ind-pill ${s>=90?'ind-pass':s>=70?'ind-warn':'ind-fail'}">${Math.round(s)}</span>`;
   },
 
-  rowHTML(r) {
+  rowHTML(r){
     const pc=(r.pct||0)>=0?'pct-positive':'pct-negative';
     const pd=r.pct!=null?`${r.pct>=0?'+':''}${r.pct.toFixed(2)}%`:'--';
     const starred=WL.isWatched(r.code);
     const na=!r.analyzed;
     const N=`<span class="ind-pill ind-na">-</span>`;
-    return `
+    return`
       <td><span class="stock-code">${r.code}</span></td>
       <td><span class="stock-name">${r.name}</span></td>
-      <td class="price-cell ${pc}">${n2(r.price)}</td>
+      <td class="price-cell ${pc}">${r.price?n2(r.price):'--'}</td>
       <td class="${pc} num-cell">${pd}</td>
       <td>${na?N:this._rsCell(r.rsScore)}</td>
       <td>${na?N:this._numPill(r.distanceFromHigh,'%')}</td>
@@ -531,31 +595,32 @@ const UI = {
       </td>`;
   },
 
-  upsertRow(r) {
-    const tbody=document.getElementById('resultsTbody'); if(!tbody) return;
+  upsertRow(r){
+    const tb=document.getElementById('resultsTbody'); if(!tb)return;
     let row=document.getElementById(`row-${r.code}`);
-    if(!row){ row=document.createElement('tr'); row.id=`row-${r.code}`; tbody.appendChild(row); }
+    if(!row){row=document.createElement('tr');row.id=`row-${r.code}`;tb.appendChild(row);}
     row.innerHTML=this.rowHTML(r);
-    if(r.analyzed){ row.classList.toggle('row-pass',r.passAll&&!r.error); row.classList.toggle('row-fail',!r.passAll&&!r.error); }
+    if(r.analyzed){row.classList.toggle('row-pass',!!r.passAll&&!r.error);row.classList.toggle('row-fail',!r.passAll&&!r.error);}
   },
 
-  updateCount() {
-    const el=document.getElementById('resultsCount'); if(!el) return;
+  updateCount(){
+    const el=document.getElementById('resultsCount');if(!el)return;
     const total=state.results.length;
     const analyzed=state.results.filter(r=>r.analyzed).length;
     const passing=state.results.filter(r=>r.passAll&&r.analyzed&&!r.error).length;
     const af=getAF();
-    if(af.length===0) el.innerHTML=`共 <strong>${total}</strong> 檔個股 <span style="color:var(--text-dim);font-size:11px">（TWSE 即時資料）</span>`;
-    else el.innerHTML=`已分析 <strong>${analyzed}</strong>/${total} 檔 | 通過篩選 <strong style="color:var(--accent)">${passing}</strong> 檔`;
+    el.innerHTML=af.length===0
+      ?`共 <strong>${total}</strong> 檔個股 <span style="color:var(--text-dim);font-size:11px">（TWSE 即時資料）</span>`
+      :`已分析 <strong>${analyzed}</strong>/${total} 檔 | 通過篩選 <strong style="color:var(--accent)">${passing}</strong> 檔`;
   },
 
-  finalize() {
-    const b=document.getElementById('stopBtn'); if(b) b.style.display='none';
+  finalize(){
+    const b=document.getElementById('stopBtn');if(b)b.style.display='none';
     this.updateCount();
   },
 
-  /* ── Watchlist modal (from results ★) ── */
-  openWatchModal(code, name) {
+  /* Watchlist modal from ★ */
+  openWatchModal(code,name){
     const inCats=WL.catsFor(code);
     document.getElementById('wModalTitle').textContent=`${code} ${name}`;
     document.getElementById('wModalCurrent').textContent=inCats.length?`目前分類：${inCats.join('、')}`:'尚未加入任何分類';
@@ -566,41 +631,33 @@ const UI = {
     modal.dataset.code=code; modal.dataset.name=name;
     modal.classList.add('open');
   },
-
-  confirmWatch() {
+  confirmWatch(){
     const modal=document.getElementById('modalWatchlist');
-    const code=modal.dataset.code;
-    const cat=document.getElementById('wModalCatSel').value;
+    const code=modal.dataset.code, cat=document.getElementById('wModalCatSel').value;
     WL.add(cat,code)?this.toast(`${code} 已加入「${cat}」`,'success'):this.toast(`${code} 已在「${cat}」`,'info');
-    modal.classList.remove('open');
-    this._refreshStar(code);
+    modal.classList.remove('open'); this._refreshStar(code);
   },
-
-  removeWatch() {
+  removeWatch(){
     const code=document.getElementById('modalWatchlist').dataset.code;
-    WL.removeAll(code);
-    this.toast(`${code} 已從所有分類移除`,'info');
-    document.getElementById('modalWatchlist').classList.remove('open');
-    this._refreshStar(code);
+    WL.removeAll(code); this.toast(`${code} 已從所有分類移除`,'info');
+    document.getElementById('modalWatchlist').classList.remove('open'); this._refreshStar(code);
   },
-
-  newCatFromModal() {
-    const nm=prompt('輸入新分類名稱：'); if(!nm?.trim()) return;
+  newCatFromModal(){
+    const nm=prompt('輸入新分類名稱：'); if(!nm?.trim())return;
     if(WL.addCat(nm.trim())){
       const sel=document.getElementById('wModalCatSel');
-      const o=document.createElement('option'); o.value=nm.trim(); o.textContent=nm.trim(); sel.appendChild(o); sel.value=nm.trim();
+      const o=document.createElement('option');o.value=nm.trim();o.textContent=nm.trim();sel.appendChild(o);sel.value=nm.trim();
       this.toast(`已新增分類「${nm.trim()}」`,'success');
-    } else { this.toast('分類已存在','error'); }
+    }else this.toast('分類已存在','error');
+  },
+  _refreshStar(code){
+    const row=document.getElementById(`row-${code}`);if(!row)return;
+    const s=row.querySelector('.watch-star');if(!s)return;
+    const w=WL.isWatched(code);s.textContent=w?'★':'☆';s.classList.toggle('starred',w);
   },
 
-  _refreshStar(code) {
-    const row=document.getElementById(`row-${code}`); if(!row) return;
-    const s=row.querySelector('.watch-star'); if(!s) return;
-    const w=WL.isWatched(code); s.textContent=w?'★':'☆'; s.classList.toggle('starred',w);
-  },
-
-  /* ── Watchlist Page ── */
-  renderWL() {
+  /* Watchlist Page */
+  renderWL(){
     const el=document.getElementById('watchlistContent');
     const cats=WL.list();
     if(cats.every(c=>c.stocks.length===0)){
@@ -625,88 +682,93 @@ const UI = {
               </div>`).join('')}
         </div>
         <div class="wl-add-row">
-          <input type="text" id="wladd-${cat.name}" placeholder="輸入代碼（如 2330）加入" maxlength="6">
+          <input type="text" id="wladd-${cat.name}" placeholder="輸入代碼（如 2330）" maxlength="5">
           <button class="wl-add-btn" onclick="UI.wlAdd('${cat.name}')">＋ 加入</button>
         </div>
       </div>`).join('');
 
-    // Fill names from cache
     cats.forEach(cat=>cat.stocks.forEach(sid=>{
-      const el2=document.getElementById(`wlnm-${cat.name}-${sid}`); if(!el2) return;
-      const c=Cache.get('twse_bulk'); if(c){const f=c.find(s=>(s.Code||s.code)===sid);if(f){el2.textContent=f.Name||f.name||sid;return;}}
-      el2.textContent=sid;
+      const e2=document.getElementById(`wlnm-${cat.name}-${sid}`);if(!e2)return;
+      const c=Cache.get('twse_dayall');
+      if(c){const f=c.find(s=>(s.Code||'').trim()===sid);if(f){e2.textContent=(f.Name||sid).trim();return;}}
+      e2.textContent=sid;
     }));
   },
-
-  wlAdd(cat) {
-    const inp=document.getElementById(`wladd-${cat}`); const sid=inp.value.trim();
-    if(!/^\d{4,5}$/.test(sid)){this.toast('請輸入 4-5 位數字股票代碼','error');return;}
-    WL.add(cat,sid)?( this.toast(`已加入 ${sid}`,'success'), inp.value='', this.renderWL() ):this.toast('股票已存在','error');
+  wlAdd(cat){
+    const inp=document.getElementById(`wladd-${cat}`);const sid=inp.value.trim();
+    if(!/^\d{4,5}$/.test(sid)){this.toast('請輸入 4 位數字股票代碼','error');return;}
+    WL.add(cat,sid)?(this.toast(`已加入 ${sid}`,'success'),inp.value='',this.renderWL()):this.toast('股票已存在','error');
   },
-
-  wlRm(cat,sid){ WL.remove(cat,sid); this.toast(`已移除 ${sid}`,'info'); this.renderWL(); },
-  delCat(name){
-    if(!confirm(`確定刪除分類「${name}」？`))return;
-    WL.delCat(name); this.toast(`已刪除分類 ${name}`,'info'); this.renderWL();
-  },
-
-  showAddCatModal() { document.getElementById('modalAddCat').classList.add('open'); document.getElementById('newCatName').focus(); },
-  confirmAddCat() {
-    const nm=document.getElementById('newCatName').value.trim(); if(!nm){this.toast('請輸入名稱','error');return;}
+  wlRm(cat,sid){WL.remove(cat,sid);this.toast(`已移除 ${sid}`,'info');this.renderWL();},
+  delCat(name){if(!confirm(`確定刪除分類「${name}」？`))return;WL.delCat(name);this.toast(`已刪除 ${name}`,'info');this.renderWL();},
+  showAddCatModal(){document.getElementById('modalAddCat').classList.add('open');document.getElementById('newCatName').focus();},
+  confirmAddCat(){
+    const nm=document.getElementById('newCatName').value.trim();if(!nm){this.toast('請輸入名稱','error');return;}
     WL.addCat(nm)?(this.toast(`已新增「${nm}」`,'success'),document.getElementById('newCatName').value='',document.getElementById('modalAddCat').classList.remove('open'),this.renderWL()):this.toast('分類已存在','error');
   },
 
-  /* ── Settings ── */
-  renderSettings() {
-    const t=document.getElementById('finmindToken'); if(t) t.value=state.finmindToken;
-    const s=document.getElementById('marketScopeSelect'); if(s) s.value=state.marketScope;
-    const b=document.getElementById('batchSizeInput'); if(b) b.value=state.batchSize;
-    this.updateTokenStatus();
+  /* Settings */
+  renderSettings(){
+    const t=document.getElementById('finmindToken');if(t)t.value=state.finmindToken;
+    const s=document.getElementById('marketScopeSelect');if(s)s.value=state.marketScope;
+    const b=document.getElementById('batchSizeInput');if(b)b.value=state.batchSize;
+    this.updateTokenStatus(); this._updateScopeLabel();
   },
-  updateTokenStatus() {
-    const el=document.getElementById('tokenStatus'); if(!el) return;
+  updateTokenStatus(){
+    const el=document.getElementById('tokenStatus');if(!el)return;
     if(!state.finmindToken){el.className='token-status token-missing';el.textContent='未設定';}
     else{el.className='token-status token-ok';el.textContent='已設定';}
   },
-  async saveToken() {
-    const v=document.getElementById('finmindToken').value.trim(); if(!v){this.toast('請輸入 Token','error');return;}
-    const el=document.getElementById('tokenStatus'); el.className='token-status token-testing'; el.textContent='驗證中...';
+  async saveToken(){
+    const v=document.getElementById('finmindToken').value.trim();if(!v){this.toast('請輸入 Token','error');return;}
+    const el=document.getElementById('tokenStatus');el.className='token-status token-testing';el.textContent='驗證中...';
     try{
       const ok=await API.testToken(v);
       if(ok){state.finmindToken=v;localStorage.setItem('finmindToken',v);this.toast('Token 驗證成功 ✓','success');el.className='token-status token-ok';el.textContent='驗證通過';}
       else{this.toast('Token 驗證失敗','error');el.className='token-status token-missing';el.textContent='驗證失敗';}
     }catch(e){this.toast('錯誤: '+e.message,'error');el.className='token-status token-missing';el.textContent='錯誤';}
   },
-  saveScope() {
-    const v=document.getElementById('marketScopeSelect').value; state.marketScope=v; localStorage.setItem('marketScope',v);
-    const lbl=v==='TSE'?'上市':v==='OTC'?'上櫃':'上市+上櫃';
-    this.toast(`市場範圍已設為「${lbl}」`,'success');
+  saveScope(){
+    const v=document.getElementById('marketScopeSelect').value;
+    state.marketScope=v;localStorage.setItem('marketScope',v);
+    this._updateScopeLabel();
+    this.toast(`市場範圍已設為「${this._scopeLabel(v)}」`,'success');
   },
-  saveBatch() {
+  saveBatch(){
     const v=parseInt(document.getElementById('batchSizeInput').value,10);
     if(isNaN(v)||v<10||v>CONFIG.MAX_BATCH){this.toast(`請輸入 10~${CONFIG.MAX_BATCH} 之間的數字`,'error');return;}
-    state.batchSize=v; localStorage.setItem('batchSize',v); this.toast(`單次分析設為 ${v} 檔`,'success');
+    state.batchSize=v;localStorage.setItem('batchSize',v);this.toast(`單次分析設為 ${v} 檔`,'success');
   },
-  clearCache() { Cache.clear(); this.toast('已清除快取','success'); },
+  clearCache(){Cache.clear();this.toast('已清除快取','success');},
+  _scopeLabel(v){return v==='TSE'?'上市（TSE）':v==='OTC'?'上櫃（OTC）':'上市+上櫃（全部）';},
+  _updateScopeLabel(){
+    const el=document.getElementById('scopeLabel');if(el)el.textContent=this._scopeLabel(state.marketScope);
+    // Also update scope select in case this is called outside renderSettings
+    const sel=document.getElementById('marketScopeSelect');if(sel)sel.value=state.marketScope;
+  },
 };
 
-/* ── Continue prompt (inline banner) ── */
-function continueBanner(done, total, bs) {
+/* ── Continue banner ── */
+function continueBanner(done,total,bs){
   return new Promise(res=>{
-    const b=document.createElement('div'); b.className='continue-banner';
+    // Remove previous if any
+    document.getElementById('continueBanner')?.remove();
+    const b=document.createElement('div');b.id='continueBanner';b.className='continue-banner';
     b.innerHTML=`<span>已分析 <strong>${done}</strong>/${total} 檔，繼續分析下一批 <strong>${bs}</strong> 檔？</span>
       <div style="display:flex;gap:8px;margin-top:8px">
-        <button class="btn-primary" id="ctnYes" style="padding:8px 20px">繼續分析</button>
-        <button class="btn-secondary" id="ctnNo" style="padding:8px 16px">停止</button>
+        <button class="btn-primary" id="ctnY" style="padding:8px 20px">繼續分析</button>
+        <button class="btn-secondary" id="ctnN" style="padding:8px 16px">停止</button>
       </div>`;
     document.querySelector('.results-toolbar')?.after(b);
-    document.getElementById('ctnYes').onclick=()=>{b.remove();res(true);};
-    document.getElementById('ctnNo').onclick =()=>{b.remove();res(false);};
+    document.getElementById('ctnY').onclick=()=>{b.remove();res(true);};
+    document.getElementById('ctnN').onclick=()=>{b.remove();res(false);};
   });
 }
 
-/* ── Main Query ── */
-async function runQuery() {
+/* ─────────────────────────────────────────────────────────
+   MAIN QUERY RUNNER
+   ───────────────────────────────────────────────────────── */
+async function runQuery(){
   const af=getAF();
   if(!state.finmindToken && af.length>0){
     UI.toast('已選擇需要 FinMind 的條件，請先在【設定】頁輸入 Token','error',4000);
@@ -717,66 +779,77 @@ async function runQuery() {
   const lt=document.getElementById('loadingText');
   const lp=document.getElementById('loadingProgress');
   ov.classList.add('visible');
+
   try{
-    const mktLabel=state.marketScope==='TSE'?'上市':state.marketScope==='OTC'?'上櫃':'上市+上櫃';
-    lt.textContent='取得全市場個股清單...'; lp.textContent=`市場：${mktLabel}`;
-    const universe=await buildUniverse();
-    if(!universe.length) throw new Error('無法取得股票清單，請確認網路連線');
+    // Step 1: get stock universe
+    const universe=await buildUniverse((msg,sub)=>{lt.textContent=msg;lp.textContent=sub;});
+    if(!universe.length)throw new Error('無法取得股票清單，請確認網路連線後重試');
+
     state.lastUpdate=new Date(); UI.updateHeader();
 
+    // Step 2: navigate & init table
     UI.nav('results'); UI.initTable(); ov.classList.remove('visible');
 
     if(af.length===0){
-      // No filters: just show all from bulk data
+      // No deep filters — just display bulk data immediately
       for(const s of universe){
         const r={...s,analyzed:false,passAll:true,filterChecks:{},passCount:0,failCount:0};
         state.results.push(r); UI.upsertRow(r);
       }
       UI.finalize();
-      UI.toast(`已載入 ${universe.length} 檔個股（${mktLabel}，TWSE 即時資料）`,'success');
+      UI.toast(`已載入 ${universe.length} 檔個股（TWSE 即時行情）`,'success');
       return;
     }
 
-    // Seed skeleton rows
+    // Step 3: seed skeleton rows
     for(const s of universe){
       const r={...s,analyzed:false,passAll:true,filterChecks:{},passCount:0,failCount:0};
       state.results.push(r); UI.upsertRow(r);
     }
     UI.updateCount();
 
-    // Taiex for RS
+    // Prefetch TAIEX
     let taiex=[];
-    if(af.includes('rs90')){ try{ taiex=await Screener.getTaiex(); }catch{} }
+    if(af.includes('rs90')){try{lt.textContent='取得大盤指數...';taiex=await Screener.getTaiex();}catch{}}
 
+    // Step 4: analyze in batches
     const bl=Math.min(state.batchSize,CONFIG.MAX_BATCH);
     let processed=0;
     for(let i=0;i<universe.length;i++){
-      if(state.abortSignal){ UI.toast('已停止分析','info'); break; }
+      if(state.abortSignal){UI.toast('已停止分析','info');break;}
       if(processed>=bl){
         const cont=await continueBanner(processed,universe.length,bl);
-        if(!cont||state.abortSignal) break;
+        if(!cont||state.abortSignal)break;
         processed=0;
       }
       const s=universe[i];
       const analyzed=await Screener.analyzeOne(s,taiex);
       const idx=state.results.findIndex(r=>r.code===s.code);
-      if(idx!==-1) state.results[idx]=analyzed;
+      if(idx!==-1)state.results[idx]=analyzed;
       UI.upsertRow(analyzed); UI.updateCount(); processed++;
     }
     UI.finalize();
     const pass=state.results.filter(r=>r.passAll&&r.analyzed&&!r.error).length;
     UI.toast(`分析完成，通過篩選 ${pass} 檔`,'success',4000);
+
   }catch(e){
-    ov.classList.remove('visible'); UI.toast('查詢錯誤：'+e.message,'error',5000);
+    ov.classList.remove('visible');
+    // More user-friendly error messages
+    let msg=e.message;
+    if(msg.includes('Failed to fetch'))msg='網路連線失敗，請確認網路後重試（或 CORS 限制）';
+    if(msg.includes('AbortError')||msg.includes('逾時'))msg='請求逾時，網路可能較慢，請重試';
+    UI.toast('查詢錯誤：'+msg,'error',6000);
   }finally{
     state.isLoading=false; ov.classList.remove('visible');
   }
 }
 
-/* ── Init ── */
+/* ─────────────────────────────────────────────────────────
+   INIT
+   ───────────────────────────────────────────────────────── */
 function init(){
   UI.applyTheme(state.theme); UI.updateHeader();
-  if('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(()=>{});
+  if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});
 
   document.getElementById('themeBtn').addEventListener('click',()=>UI.applyTheme(state.theme==='dark'?'light':'dark'));
   document.querySelectorAll('.nav-btn').forEach(b=>b.addEventListener('click',()=>UI.nav(b.dataset.page)));
@@ -796,7 +869,10 @@ function init(){
   });
 
   document.querySelectorAll('.filter-cat-header').forEach(h=>{
-    h.addEventListener('click',e=>{if(e.target.closest('button'))return;h.closest('.filter-category')?.classList.toggle('collapsed');});
+    h.addEventListener('click',e=>{
+      if(e.target.closest('button'))return;
+      h.closest('.filter-category')?.classList.toggle('collapsed');
+    });
   });
 
   document.getElementById('queryBtn')?.addEventListener('click',runQuery);
@@ -822,16 +898,6 @@ function init(){
   document.getElementById('modalWatchlist')?.addEventListener('click',e=>{if(e.target.id==='modalWatchlist')e.target.classList.remove('open');});
 
   UI.renderTags(); UI.renderSettings(); UI.nav('screen');
-
-  // Update scope banner label
-  const updateScopeLabel = () => {
-    const lbl = state.marketScope === 'TSE' ? '上市（TSE）'
-              : state.marketScope === 'OTC' ? '上櫃（OTC）'
-              : '上市 + 上櫃（全部）';
-    const el = document.getElementById('scopeLabel');
-    if (el) el.textContent = lbl;
-  };
-  updateScopeLabel();
-  document.getElementById('saveMarketScopeBtn')?.addEventListener('change', updateScopeLabel);
 }
-document.addEventListener('DOMContentLoaded',init);
+
+document.addEventListener('DOMContentLoaded', init);

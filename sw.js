@@ -1,12 +1,12 @@
-const CACHE_NAME = 'taiwan-stock-radar-v0.2';
+const CACHE_NAME = 'taiwan-stock-radar-v0.3';
 const STATIC_ASSETS = [
   './',
   './index.html',
   './style.css',
   './app.js',
   './manifest.json',
-  './icons/icon-192.svg',
-  './icons/icon-512.svg'
+  './icon-192.svg',
+  './icon-512.svg'
 ];
 
 // Install: cache static assets
