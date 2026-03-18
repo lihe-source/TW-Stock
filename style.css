@@ -1091,16 +1091,12 @@ textarea {
 /* ── Error row ── */
 .row-error td { color: var(--negative) !important; font-size: 11px; }
 
-/* ── V0.2: Data Date Block (header) ── */
+/* ── Data Date Block (header) — always visible ── */
 .data-date-block {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 1px;
-  display: none;  /* hidden until data loaded */
-}
-@media (min-width: 360px) {
-  .data-date-block { display: flex; }
 }
 
 .data-date-label {
