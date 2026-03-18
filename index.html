@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-TW" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="台股雷達">
+  <meta name="theme-color" content="#0A0F1E" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
+  <title>台股雷達 Stock Radar</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/icon-192.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ══ HEADER ══ -->
+  <header class="app-header">
+    <div class="header-logo">
+      <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect width="32" height="32" rx="8" fill="#141B2D"/>
+        <polyline points="4,24 10,16 15,20 22,10 28,14"
+          stroke="#00D4AA" stroke-width="2.2" fill="none"
+          stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="28" cy="14" r="2.5" fill="#F5C843"/>
+      </svg>
+      <span class="logo-text">台股雷達</span>
+      <span class="logo-sub">Stock Radar</span>
+    </div>
+    <div class="header-meta">
+      <span class="update-time" id="updateTime">尚未查詢</span>
+      <span class="version-badge" id="versionBadge">V0.1</span>
+      <button class="theme-btn" id="themeBtn" title="切換深色/淺色">🌙</button>
+    </div>
+  </header>
+
+  <!-- ══ MAIN ══ -->
+  <main class="app-main">
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+      <div class="spinner"></div>
+      <div class="loading-text" id="loadingText">正在分析個股...</div>
+      <div class="loading-progress" id="loadingProgress"></div>
+    </div>
+
+    <!-- ══ PAGE: 篩選 ══ -->
+    <div class="page" id="page-screen">
+      <div class="page-scroll">
+
+        <!-- Active filter tags -->
+        <div class="section-title">🔖 已選篩選條件</div>
+        <div id="activeTags" class="active-filters"></div>
+
+        <!-- Info banner -->
+        <div class="info-banner">
+          ⚡ 資料來源：FinMind API（需 Token）+ TWSE Open API。單次最多查詢 20 檔，建議先設定自選股。
+        </div>
+
+        <!-- ── Technical Filters ── -->
+        <div class="filter-category" id="cat-tech">
+          <div class="filter-cat-header">
+            <span style="font-size:16px">📊</span>
+            <span class="filter-cat-title">技術面</span>
+            <span class="filter-cat-badge" id="badge-tech">0/5</span>
+            <button class="btn-secondary select-all-btn" data-cat="tech" style="padding:4px 8px;font-size:11px">全選</button>
+            <span class="cat-toggle">▾</span>
+          </div>
+          <div class="filter-body">
+            <label class="filter-item">
+              <input type="checkbox" id="filter-rs90" class="filter-checkbox" data-filter="rs90" data-cat="tech">
+              <span class="filter-label">RS 指標大於 90<br><small style="color:var(--text-dim)">相對大盤強度</small></span>
+            </label>
+            <label class="filter-item">
+              <input type="checkbox" id="filter-nearMonthlyHigh" class="filter-checkbox" data-filter="nearMonthlyHigh" data-cat="tech">
+              <span class="filter-label">距上月高點 ≤ 5%<br><small style="color:var(--text-dim)">近22交易日</small></span>
+            </label>
+            <label class="filter-item">
+              <input type="checkbox" id="filter-shortMAAlign" class="filter-checkbox" data-filter="shortMAAlign" data-cat="tech">
+              <span class="filter-label">短期均線排列正確<br><small style="color:var(--text-dim)">MA5 &gt; MA10 &gt; MA20</small></span>
+            </label>
+            <label class="filter-item">
+              <input type="checkbox" id="filter-longMAAlign" class="filter-checkbox" data-filter="longMAAlign" data-cat="tech">
+              <span class="filter-label">中長期均線排列正確<br><small style="color:var(--text-dim)">MA20 &gt; MA60 &gt; MA120</small></span>
+            </label>
+            <label class="filter-item">
+              <input type="checkbox" id="filter-aboveSubPoint" class="filter-checkbox" data-filter="aboveSubPoint" data-cat="tech">
+              <span class="filter-label">站上扣抵值<br><small style="color:var(--text-dim)">收盤 &gt; 20/60日前股價</small></span>
+            </label>
+          </div>
+        </div>
+
+        <!-- ── Fundamental Filters ── -->
+        <div class="filter-category" id="cat-fund">
+          <div class="filter-cat-header">
+            <span style="font-size:16px">📈</span>
+            <span class="filter-cat-title">基本面</span>
+            <span class="filter-cat-badge" id="badge-fund">0/5</span>
+            <button class="btn-secondary select-all-btn" data-cat="fund" style="padding:4px 8px;font-size:11px">全選</button>
+            <span class="cat-toggle">▾</span>
+          </div>
+          <div class="filter-body">
+            <label class="filter-item">
+              <input type="checkbox" id="filter-revenueHighRecord" class="filter-checkbox" data-filter="revenueHighRecord" data-cat="fund">
+              <span class="filter-label">營收創歷史或同期高<br><small style="color:var(--text-dim)">歷史最高 / 去年同月高</small></span>
+            </label>
+            <label class="filter-item">
+              <input type="checkbox" id="filter-revenueYoY" class="filter-checkbox" data-filter="revenueYoY" data-cat="fund">
+              <span class="filter-label">年增率連2月 &gt; 20%<br><small style="color:var(--text-dim)">近2個月 YoY</small></span>
+            </label>
+            <label class="filter-item">
+              <input type="checkbox" id="filter-revenueMoM" class="filter-checkbox" data-filter="revenueMoM" data-cat="fund">
+              <span class="filter-label">月增率連2月 &gt; 20%<br><small style="color:var(--text-dim)">近2個月 MoM</small></span>
+            </label>
+            <label class="filter-item">
+              <input type="checkbox" id="filter-marginGrowth" class="filter-checkbox" data-filter="marginGrowth" data-cat="fund">
+              <span class="filter-label">毛利率、營益率較去年成長<br><small style="color:var(--text-dim)">最近季vs去年同季</small></span>
+            </label>
+            <label class="filter-item">
+              <input type="checkbox" id="filter-noProfitLoss" class="filter-checkbox" data-filter="noProfitLoss" data-cat="fund">
+              <span class="filter-label">公司沒有虧損<br><small style="color:var(--text-dim)">近期淨利 &gt; 0</small></span>
+            </label>
+          </div>
+        </div>
+
+        <!-- ── Chip Filters ── -->
+        <div class="filter-category" id="cat-chip">
+          <div class="filter-cat-header">
+            <span style="font-size:16px">🎯</span>
+            <span class="filter-cat-title">籌碼面</span>
+            <span class="filter-cat-badge" id="badge-chip">0/6</span>
+            <button class="btn-secondary select-all-btn" data-cat="chip" style="padding:4px 8px;font-size:11px">全選</button>
+            <span class="cat-toggle">▾</span>
+          </div>
+          <div class="filter-body">
+            <label class="filter-item">
+              <input type="checkbox" id="filter-chipConcentration" class="filter-checkbox" data-filter="chipConcentration" data-cat="chip">
+              <span class="filter-label">籌碼集中度增加<br><small style="color:var(--text-dim)">大戶持股比例提升</small></span>
+            </label>
+            <label class="filter-item">
+              <input type="checkbox" id="filter-buyerSellerDiff" class="filter-checkbox" data-filter="buyerSellerDiff" data-cat="chip">
+              <span class="filter-label">近期買賣家數差 &lt; 0<br><small style="color:var(--text-dim)">⚠ V0.1 暫不支援</small></span>
+            </label>
+            <label class="filter-item">
+              <input type="checkbox" id="filter-foreignBuy" class="filter-checkbox" data-filter="foreignBuy" data-cat="chip">
+              <span class="filter-label">外資買超<br><small style="color:var(--text-dim)">近5日外資淨買超</small></span>
+            </label>
+            <label class="filter-item">
+              <input type="checkbox" id="filter-trustBuy" class="filter-checkbox" data-filter="trustBuy" data-cat="chip">
+              <span class="filter-label">投信買超<br><small style="color:var(--text-dim)">近5日投信淨買超</small></span>
+            </label>
+            <label class="filter-item">
+              <input type="checkbox" id="filter-bigHolderIncrease" class="filter-checkbox" data-filter="bigHolderIncrease" data-cat="chip">
+              <span class="filter-label">大戶持股比例增加<br><small style="color:var(--text-dim)">集保持股結構</small></span>
+            </label>
+            <label class="filter-item">
+              <input type="checkbox" id="filter-institutionalRecord" class="filter-checkbox" data-filter="institutionalRecord" data-cat="chip">
+              <span class="filter-label">法人持股創一季新高<br><small style="color:var(--text-dim)">近13週法人買超高</small></span>
+            </label>
+          </div>
+        </div>
+
+        <!-- ── Query Source ── -->
+        <div class="query-panel">
+          <label>📌 查詢標的</label>
+          <div class="select-wrapper">
+            <select id="querySource">
+              <option value="watchlist">自選股清單</option>
+              <option value="manual">手動輸入代碼</option>
+            </select>
+          </div>
+          <div id="manualArea" style="display:none;margin-top:8px">
+            <label style="font-size:11px;color:var(--text-dim);margin-bottom:4px;display:block">每行輸入一個代碼（最多 20 檔）：</label>
+            <textarea id="manualStocks" placeholder="2330&#10;2317&#10;2454&#10;..."></textarea>
+          </div>
+        </div>
+
+        <!-- Query Button -->
+        <button class="btn-primary" id="queryBtn">
+          <span>🔍</span> 開始篩選查詢
+        </button>
+
+        <div style="height:16px"></div>
+      </div>
+    </div><!-- /page-screen -->
+
+    <!-- ══ PAGE: 結果 ══ -->
+    <div class="page" id="page-results">
+      <div class="results-toolbar">
+        <span class="results-count" id="resultsCount">尚無查詢結果</span>
+        <button class="btn-secondary" onclick="UI.navigateTo('screen')" style="padding:6px 10px;font-size:11px">
+          ← 回篩選
+        </button>
+      </div>
+      <div id="resultsContainer" style="flex:1;overflow:hidden;display:flex;flex-direction:column">
+        <div class="empty-state">
+          <div class="empty-icon">📊</div>
+          <div class="empty-title">尚無查詢結果</div>
+          <div class="empty-sub">請前往「篩選」頁<br>選擇條件並按下查詢</div>
+        </div>
+      </div>
+    </div><!-- /page-results -->
+
+    <!-- ══ PAGE: 自選股 ══ -->
+    <div class="page" id="page-watchlist">
+      <div class="watchlist-header">
+        <h2>⭐ 自選股管理</h2>
+        <button class="btn-secondary" id="addCatBtn">+ 新增分類</button>
+      </div>
+      <div class="page-scroll" id="watchlistContent" style="padding-top:12px">
+        <div class="empty-state">
+          <div class="empty-icon">⭐</div>
+          <div class="empty-title">自選股清單為空</div>
+          <div class="empty-sub">點右上角「+ 新增分類」<br>或在查詢結果中點 ☆ 加入</div>
+        </div>
+      </div>
+    </div><!-- /page-watchlist -->
+
+    <!-- ══ PAGE: 設定 ══ -->
+    <div class="page" id="page-settings">
+      <div class="page-scroll">
+
+        <!-- FinMind API Section -->
+        <div class="settings-section">
+          <div class="settings-section-title">🔑 FinMind API 設定</div>
+
+          <div class="settings-row">
+            <div class="settings-label">API Token <span id="tokenStatus" class="token-status token-missing">未設定</span></div>
+            <div class="settings-desc">
+              FinMind 提供台股免費資料 API，每日約 300~600 次免費請求。<br>
+              請至 <strong>finmindtrade.com</strong> 免費註冊後取得 Token。
+            </div>
+            <div class="settings-input-row" style="margin-top:8px">
+              <input type="text" id="finmindToken" placeholder="貼上您的 FinMind Token">
+              <button class="btn-secondary" id="saveTokenBtn">驗證並儲存</button>
+            </div>
+          </div>
+
+          <div class="settings-row">
+            <div class="settings-label">📋 如何申請 FinMind Token</div>
+            <div class="settings-desc" style="line-height:1.8">
+              1. 前往 <a href="https://finmindtrade.com" target="_blank" style="color:var(--accent)">finmindtrade.com</a><br>
+              2. 點選右上角「註冊」，填寫 Email 和密碼<br>
+              3. Email 驗證後，前往「個人中心」→「API Token」<br>
+              4. 複製 Token 並貼入上方欄位<br>
+              <br>
+              ⚠ 免費版每日限制 300~600 次 API 請求，一次查詢約消耗 3-5 次/股。
+            </div>
+          </div>
+        </div>
+
+        <!-- Data & Cache -->
+        <div class="settings-section">
+          <div class="settings-section-title">📦 資料與快取</div>
+          <div class="settings-row">
+            <div class="settings-label">清除快取</div>
+            <div class="settings-desc">清除本地端暫存的股票資料，下次查詢將重新從 API 取得最新資料。</div>
+            <div style="margin-top:8px">
+              <button class="btn-secondary" id="clearCacheBtn">🗑 清除所有快取</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Data Source Info -->
+        <div class="settings-section">
+          <div class="settings-section-title">ℹ️ 資料來源說明</div>
+          <div class="settings-row">
+            <div class="settings-desc" style="line-height:2">
+              <strong>技術面</strong> — FinMind 股價歷史資料（TaiwanStockPrice）<br>
+              <strong>基本面（月營收）</strong> — FinMind 月營收（TaiwanStockMonthRevenue）<br>
+              <strong>基本面（財報）</strong> — FinMind 財務報表（TaiwanStockFinancialStatements）<br>
+              <strong>法人買賣超</strong> — FinMind 三大法人（TaiwanStockInstitutionalInvestors）<br>
+              <strong>籌碼集中度</strong> — FinMind 股東結構（TaiwanStockShareholderStructure）<br>
+              <strong>股票名稱</strong> — TWSE Open API（免費，無需 Token）<br>
+              <br>
+              ⚠ <strong>V0.1 限制說明：</strong><br>
+              • 買賣家數差（近期買賣家數差為負）：此資料需 TWSE 分點資料，V0.1 暫不支援<br>
+              • RS 指標：以個股相對 TAIEX 表現計算，並非全市場排名<br>
+              • 財報毛利率/營益率：部分個股 FinMind 免費版資料不完整
+            </div>
+          </div>
+        </div>
+
+        <!-- App info -->
+        <div class="settings-section">
+          <div class="settings-section-title">🚀 關於此應用</div>
+          <div class="settings-row">
+            <div class="settings-desc" style="line-height:1.8">
+              版本：<strong>V0.1</strong><br>
+              部署：GitHub Pages（純靜態 PWA）<br>
+              技術：Vanilla JS + FinMind API + TWSE Open API<br>
+              <br>
+              📌 <strong>注意事項：</strong><br>
+              本工具僅供參考，不構成投資建議。股市有風險，投資需謹慎。
+            </div>
+          </div>
+        </div>
+
+        <div style="height:20px"></div>
+      </div>
+    </div><!-- /page-settings -->
+
+  </main><!-- /app-main -->
+
+  <!-- ══ BOTTOM NAV ══ -->
+  <nav class="app-nav">
+    <button class="nav-btn active" data-page="screen">
+      <span class="nav-icon">🔍</span>篩選
+    </button>
+    <button class="nav-btn" data-page="results">
+      <span class="nav-icon">📋</span>結果
+    </button>
+    <button class="nav-btn" data-page="watchlist">
+      <span class="nav-icon">⭐</span>自選股
+    </button>
+    <button class="nav-btn" data-page="settings">
+      <span class="nav-icon">⚙️</span>設定
+    </button>
+  </nav>
+
+</div><!-- /app -->
+
+<!-- ══ MODAL: Add Category ══ -->
+<div class="modal-backdrop" id="modalAddCat">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">📁 新增自選股分類</span>
+      <button class="modal-close" id="cancelCatBtn">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-field">
+        <label>分類名稱</label>
+        <input type="text" id="newCatName" placeholder="例如：科技股、金融股..." maxlength="20">
+      </div>
+      <button class="btn-primary" id="confirmCatBtn" style="margin-top:4px">確認新增</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ TOAST CONTAINER ══ -->
+<div class="toast-container" id="toastContainer"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
