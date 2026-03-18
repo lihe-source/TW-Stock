@@ -1080,6 +1080,20 @@ textarea {
 .page.active .page-scroll > *:nth-child(4) { animation-delay: 120ms; }
 .page.active .page-scroll > *:nth-child(5) { animation-delay: 160ms; }
 
+/* ── Progress bar ── */
+.progress-bar-wrap {
+  height: 3px;
+  background: var(--border);
+  flex-shrink: 0;
+  transition: opacity 0.4s;
+}
+.progress-bar-inner {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 0 2px 2px 0;
+  transition: width 0.3s ease;
+}
+
 /* ── No Results ── */
 .no-results {
   text-align: center;
