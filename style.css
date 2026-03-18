@@ -1090,3 +1090,97 @@ textarea {
 
 /* ── Error row ── */
 .row-error td { color: var(--negative) !important; font-size: 11px; }
+
+/* ── V0.2: Data Date Block (header) ── */
+.data-date-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  display: none;  /* hidden until data loaded */
+}
+@media (min-width: 360px) {
+  .data-date-block { display: flex; }
+}
+
+.data-date-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+/* Once data is loaded, the date part glows slightly */
+.data-date-label.has-data {
+  color: var(--accent);
+}
+
+.data-fetch-time {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+/* ── V0.2: Row pass/fail highlight ── */
+.stock-table tbody tr.row-pass td:nth-child(1),
+.stock-table tbody tr.row-pass td:nth-child(2) {
+  border-left: 2px solid var(--positive);
+}
+.stock-table tbody tr.row-fail {
+  opacity: 0.55;
+}
+
+/* ── V0.2: Continue banner ── */
+.continue-banner {
+  background: var(--bg-card);
+  border: 1px solid var(--gold);
+  border-radius: 0;
+  padding: 12px 16px;
+  font-size: 13px;
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.continue-banner strong { color: var(--accent); }
+
+/* ── V0.2: Results toolbar also sticky ── */
+.results-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface);
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+/* ── V0.2: Watchlist modal remove btn ── */
+#wModalRemoveBtn {
+  background: transparent;
+  color: var(--negative);
+  border: 1px solid var(--negative);
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: 'Noto Sans TC', sans-serif;
+  cursor: pointer;
+  padding: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: background 0.15s;
+}
+#wModalRemoveBtn:hover { background: rgba(255,71,87,0.1); }
+
+/* ind-warn */
+.ind-warn {
+  background: rgba(255,183,77,0.10);
+  color: var(--warning);
+  border: 1px solid rgba(255,183,77,0.25);
+}
