@@ -549,6 +549,7 @@ textarea {
 .table-scroll {
   flex: 1;
   overflow: auto;
+  min-height: 0;   /* ← CRITICAL: allows flex child to shrink below content height */
 }
 
 .stock-table {
