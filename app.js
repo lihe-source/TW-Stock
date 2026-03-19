@@ -8,7 +8,7 @@
  *  - 右上角顯示 screener.json 的實際資料日期
  */
 
-const APP_VERSION = 'V1.6';
+const APP_VERSION = 'V1.7';
 
 const CFG = {
   SCREENER_JSON: './data/screener.json',  // 預計算資料
@@ -66,17 +66,20 @@ async function fx(url) {
    ───────────────────────────────────────────── */
 async function loadScreenerData() {
   const ck = 'screener_json';
-  // Check cache first (max 30 min)
+  // Check localStorage cache first (max 30 min)
   const cached = Cache.get(ck);
   if (cached && cached.stocks && cached.stocks.length > 0) {
     return cached;
   }
 
-  const data = await fx(CFG.SCREENER_JSON);
+  // Add cache-busting query string to bypass browser HTTP cache
+  // This ensures we always get the latest screener.json from GitHub Pages
+  const url = CFG.SCREENER_JSON + '?_=' + Date.now();
+  const data = await fx(url);
   if (!data) throw new Error('screener.json 無法讀取');
 
   if (data.stocks && data.stocks.length > 0) {
-    Cache.set(ck, data, 30 * 60 * 1000);  // cache 30 min
+    Cache.set(ck, data, 30 * 60 * 1000);  // cache 30 min in localStorage
   }
   return data;
 }
@@ -198,7 +201,7 @@ const UI = {
   },
 
   renderTags(){
-    const L={rs90:'RS > 90',nearMonthlyHigh:'距月高 ≤ 5%',shortMAAlign:'短均排列',longMAAlign:'中長均排列',aboveSubPoint:'站上扣抵',revenueHighRecord:'營收創高',revenueYoY:'YoY連2月>20%',revenueMoM:'MoM連2月>20%',marginGrowth:'毛/營益率↑',noProfitLoss:'無虧損',chipConcentration:'籌碼集中↑',buyerSellerDiff:'買賣家數差<0',foreignBuy:'外資買超',trustBuy:'投信買超',bigHolderIncrease:'大戶比例↑',institutionalRecord:'法人持股季高'};
+    const L={rs90:'RS > 90',nearMonthlyHigh:'距月高 ≤ 5%',shortMAAlign:'短均排列',longMAAlign:'中長均排列',aboveSubPoint:'站上MA5扣抵',revenueHighRecord:'營收創高',revenueYoY:'YoY連2月>20%',revenueMoM:'MoM連2月>20%',marginGrowth:'毛/營益率↑',noProfitLoss:'無虧損',chipConcentration:'籌碼集中↑',buyerSellerDiff:'買賣家數差<0',foreignBuy:'外資買超',trustBuy:'投信買超',bigHolderIncrease:'大戶比例↑',institutionalRecord:'法人持股季高'};
     const el=document.getElementById('activeTags'); if(!el)return;
     const af=getAF();
     el.innerHTML=af.length===0
@@ -232,7 +235,13 @@ const UI = {
       return;
     }
 
+    const LABELS={rs90:'RS>90',nearMonthlyHigh:'距月高≤5%',shortMAAlign:'短均排列',longMAAlign:'中長均排列',aboveSubPoint:'站上MA5扣抵',revenueHighRecord:'營收創高',revenueYoY:'YoY連2月>20%',revenueMoM:'MoM連2月>20%',marginGrowth:'毛/營益率↑',noProfitLoss:'無虧損',chipConcentration:'籌碼集中↑',buyerSellerDiff:'買賣家數差<0',foreignBuy:'外資買超',trustBuy:'投信買超',bigHolderIncrease:'大戶比例↑',institutionalRecord:'法人持股季高'};
+    const filterBar = af.length===0
+      ? ''
+      : `<div class="results-filter-bar">${af.map(f=>`<span class="filter-tag" style="font-size:10px;padding:2px 7px">${LABELS[f]||f}</span>`).join('')}</div>`;
+
     container.innerHTML=`
+      ${filterBar}
       <div class="results-toolbar">
         <span class="results-count" id="resultsCount">
           ${af.length===0
@@ -373,36 +382,42 @@ const UI = {
 
   /* Settings */
   renderSettings(){
-    this.updateTokenStatus();
     const di=document.getElementById('dataInfo');
     if(di){
       if(state.dataDate){
+        const srcLabel = state.dataSource==='finmind+twse'      ? 'FinMind + TWSE（完整）'
+                       : state.dataSource==='yfinance+finmind+twse' ? 'yfinance + FinMind + TWSE（完整）'
+                       : state.dataSource==='yfinance+twse'     ? 'yfinance + TWSE（技術面）'
+                       : state.dataSource==='twse_only'         ? 'TWSE（技術面）'
+                       : state.dataSource || '未知';
         di.innerHTML=`資料日期：<strong>${fmtD(state.dataDate)}</strong><br>
           建置時間：<strong>${state.generated?new Date(state.generated).toLocaleString('zh-TW'):'-'}</strong><br>
-          資料來源：<strong>${state.dataSource==='finmind+twse'?'FinMind + TWSE（完整）':state.dataSource==='twse_only'?'TWSE（技術面）':'未知'}</strong><br>
+          資料來源：<strong>${srcLabel}</strong><br>
           個股數量：<strong>${state.allStocks.length}</strong> 檔`;
       } else {
         di.innerHTML='<span style="color:var(--negative)">⚠ 尚無預計算資料，請執行 GitHub Actions</span>';
       }
     }
-    const ft=document.getElementById('finmindTokenDisp');
-    if(ft) ft.textContent=localStorage.getItem('finmindToken')?'已設定':'未設定';
-  },
-  updateTokenStatus(){
-    const el=document.getElementById('tokenStatus');if(!el)return;
-    const t=localStorage.getItem('finmindToken');
-    if(!t){el.className='token-status token-missing';el.textContent='未設定';}
-    else{el.className='token-status token-ok';el.textContent='已設定（供 GitHub Actions 使用）';}
-  },
-  saveToken(){
-    const v=document.getElementById('finmindToken').value.trim();
-    if(!v){this.toast('請輸入 Token','error');return;}
-    localStorage.setItem('finmindToken',v);
-    this.toast('Token 已儲存（GitHub Actions Secret 需另外設定）','success',4000);
-    this.updateTokenStatus();
   },
   clearCache(){Cache.clear();this.toast('已清除快取，下次查詢將重新讀取 screener.json','success');},
-  reloadData(){Cache.clear();runQuery();},
+  reloadData(){
+    Cache.clear();
+    state.allStocks=[];  // force fresh load
+    UI.toast('重新載入資料中...','info',2000);
+    loadScreenerData().then(data=>{
+      state.allStocks  = data.stocks||[];
+      state.dataDate   = data.dataDate;
+      state.generated  = data.generated;
+      state.dataSource = data.source;
+      UI.updateHeader();
+      UI.updateScopeBanner();
+      UI.renderSettings();
+      UI.nav('screen');   // 載入完成後回到篩選頁
+      UI.toast(`已載入 ${state.allStocks.length} 檔個股（${fmtD(state.dataDate)}）`,'success',3000);
+    }).catch(e=>{
+      UI.toast('重新載入失敗：'+e.message,'error',5000);
+    });
+  },
 };
 
 /* ─────────────────────────────────────────────
