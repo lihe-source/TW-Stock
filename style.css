@@ -118,7 +118,8 @@ body {
   background: var(--header-bg);
   border-bottom: 1px solid var(--border);
   padding: 0 16px;
-  height: 52px;
+  padding-top: env(safe-area-inset-top, 0px);       /* iOS notch / Dynamic Island */
+  height: calc(52px + env(safe-area-inset-top, 0px));
   display: flex;
   align-items: center;
   gap: 12px;
@@ -206,6 +207,8 @@ body {
   display: flex;
   flex-shrink: 0;
   z-index: 100;
+  /* iOS home indicator safe area */
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 .nav-btn {
@@ -226,6 +229,8 @@ body {
   letter-spacing: 0.03em;
   transition: color 0.2s;
   position: relative;
+  /* Minimum tap target height */
+  min-height: 50px;
 }
 
 .nav-btn .nav-icon { font-size: 18px; line-height: 1; }
@@ -265,7 +270,7 @@ body {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 16px;
+  padding: 10px 14px;
 }
 
 /* ── Section headers ── */
@@ -287,12 +292,12 @@ body {
   background: var(--border);
 }
 
-/* ── Filter Cards ── */
+/* ── Filter Categories ── */
 .filter-category {
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  margin-bottom: 12px;
+  border-radius: 10px;
+  margin-bottom: 8px;
   overflow: hidden;
   box-shadow: var(--shadow-sm);
 }
@@ -300,8 +305,8 @@ body {
 .filter-cat-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 12px 14px;
+  gap: 6px;
+  padding: 9px 12px;
   background: var(--bg-card);
   border-bottom: 1px solid var(--border-light);
   cursor: pointer;
@@ -309,7 +314,7 @@ body {
 }
 
 .filter-cat-title {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--text-primary);
   flex: 1;
@@ -329,10 +334,10 @@ body {
 .filter-category.collapsed .cat-toggle { transform: rotate(-90deg); }
 
 .filter-body {
-  padding: 8px 6px;
+  padding: 4px 4px;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 2px;
+  gap: 1px;
 }
 .filter-category.collapsed .filter-body { display: none; }
 
@@ -340,9 +345,9 @@ body {
 .filter-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: 8px;
+  gap: 7px;
+  padding: 6px 8px;
+  border-radius: 6px;
   cursor: pointer;
   transition: background 0.15s;
   user-select: none;
@@ -350,16 +355,21 @@ body {
 .filter-item:hover { background: var(--bg-hover); }
 
 .filter-item input[type="checkbox"] {
-  width: 16px; height: 16px;
+  width: 15px; height: 15px;
   accent-color: var(--accent);
   cursor: pointer;
   flex-shrink: 0;
 }
 
 .filter-label {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-secondary);
-  line-height: 1.3;
+  line-height: 1.25;
+}
+.filter-label small {
+  font-size: 9px;
+  display: block;
+  color: var(--text-dim);
 }
 
 .filter-item input:checked ~ .filter-label {

@@ -37,7 +37,7 @@
         <span class="data-date-label" id="dataDate">資料 --/--/--</span>
         <span class="data-fetch-time" id="fetchTime">尚未查詢</span>
       </div>
-      <span class="version-badge" id="versionBadge">V1.5</span>
+      <span class="version-badge" id="versionBadge">V1.6</span>
       <button class="theme-btn" id="themeBtn" title="切換深色/淺色">🌙</button>
     </div>
   </header>
@@ -57,44 +57,43 @@
       <div class="page-scroll">
 
         <!-- Active filter tags -->
-        <div class="section-title">🔖 已選篩選條件</div>
-        <div id="activeTags" class="active-filters"></div>
+        <div class="section-title" style="font-size:10px;margin-bottom:6px">🔖 已選篩選條件</div>
+        <div id="activeTags" class="active-filters" style="margin-bottom:8px"></div>
 
-        <!-- Market scope banner -->
-        <div class="info-banner" id="scopeBanner">
-          📡 查詢範圍：<strong id="scopeLabel">上市（TSE）</strong> 全部個股
-          &nbsp;·&nbsp; 設定批次分析數量請至【設定】頁
+        <!-- Market scope banner - compact -->
+        <div class="info-banner" id="scopeBanner" style="padding:7px 10px;font-size:10px;margin-bottom:8px">
+          📡 <strong id="scopeLabel">上市（TSE）</strong> 全部個股 &nbsp;·&nbsp; 篩選在本機執行，<strong>速度極快</strong>
         </div>
 
         <!-- ── Technical Filters ── -->
         <div class="filter-category">
           <div class="filter-cat-header">
-            <span style="font-size:16px">📊</span>
+            <span style="font-size:14px">📊</span>
             <span class="filter-cat-title">技術面</span>
             <span class="filter-cat-badge" id="badge-tech">0/5</span>
-            <button class="btn-secondary select-all-btn" data-cat="tech" style="padding:4px 8px;font-size:11px">全選</button>
+            <button class="btn-secondary select-all-btn" data-cat="tech" style="padding:3px 7px;font-size:10px">全選</button>
             <span class="cat-toggle">▾</span>
           </div>
           <div class="filter-body">
             <label class="filter-item">
               <input type="checkbox" id="filter-rs90" class="filter-checkbox" data-filter="rs90" data-cat="tech">
-              <span class="filter-label">RS 指標大於 90<br><small style="color:var(--text-dim)">相對大盤強度</small></span>
+              <span class="filter-label">RS 指標大於 90<small>相對大盤強度</small></span>
             </label>
             <label class="filter-item">
               <input type="checkbox" id="filter-nearMonthlyHigh" class="filter-checkbox" data-filter="nearMonthlyHigh" data-cat="tech">
-              <span class="filter-label">距上月高點 ≤ 5%<br><small style="color:var(--text-dim)">近22交易日</small></span>
+              <span class="filter-label">距上月高點 ≤ 5%<small>近22交易日</small></span>
             </label>
             <label class="filter-item">
               <input type="checkbox" id="filter-shortMAAlign" class="filter-checkbox" data-filter="shortMAAlign" data-cat="tech">
-              <span class="filter-label">短期均線排列正確<br><small style="color:var(--text-dim)">MA5 &gt; MA10 &gt; MA20</small></span>
+              <span class="filter-label">短期均線排列正確<small>MA5 &gt; MA10 &gt; MA20</small></span>
             </label>
             <label class="filter-item">
               <input type="checkbox" id="filter-longMAAlign" class="filter-checkbox" data-filter="longMAAlign" data-cat="tech">
-              <span class="filter-label">中長期均線排列正確<br><small style="color:var(--text-dim)">MA20 &gt; MA60 &gt; MA120</small></span>
+              <span class="filter-label">中長期均線排列正確<small>MA20 &gt; MA60 &gt; MA120</small></span>
             </label>
             <label class="filter-item">
               <input type="checkbox" id="filter-aboveSubPoint" class="filter-checkbox" data-filter="aboveSubPoint" data-cat="tech">
-              <span class="filter-label">站上扣抵值<br><small style="color:var(--text-dim)">收盤 &gt; 20/60日前股價</small></span>
+              <span class="filter-label">站上扣抵值<small>收盤 &gt; 20/60日前股價</small></span>
             </label>
           </div>
         </div>
@@ -102,32 +101,32 @@
         <!-- ── Fundamental Filters ── -->
         <div class="filter-category">
           <div class="filter-cat-header">
-            <span style="font-size:16px">📈</span>
+            <span style="font-size:14px">📈</span>
             <span class="filter-cat-title">基本面</span>
             <span class="filter-cat-badge" id="badge-fund">0/5</span>
-            <button class="btn-secondary select-all-btn" data-cat="fund" style="padding:4px 8px;font-size:11px">全選</button>
+            <button class="btn-secondary select-all-btn" data-cat="fund" style="padding:3px 7px;font-size:10px">全選</button>
             <span class="cat-toggle">▾</span>
           </div>
           <div class="filter-body">
             <label class="filter-item">
               <input type="checkbox" id="filter-revenueHighRecord" class="filter-checkbox" data-filter="revenueHighRecord" data-cat="fund">
-              <span class="filter-label">營收創歷史或同期高<br><small style="color:var(--text-dim)">歷史最高 / 去年同月高</small></span>
+              <span class="filter-label">營收創歷史或同期高<small>歷史最高 / 去年同月高</small></span>
             </label>
             <label class="filter-item">
               <input type="checkbox" id="filter-revenueYoY" class="filter-checkbox" data-filter="revenueYoY" data-cat="fund">
-              <span class="filter-label">年增率連2月 &gt; 20%<br><small style="color:var(--text-dim)">近2個月 YoY</small></span>
+              <span class="filter-label">年增率連2月 &gt; 20%<small>近2個月 YoY</small></span>
             </label>
             <label class="filter-item">
               <input type="checkbox" id="filter-revenueMoM" class="filter-checkbox" data-filter="revenueMoM" data-cat="fund">
-              <span class="filter-label">月增率連2月 &gt; 20%<br><small style="color:var(--text-dim)">近2個月 MoM</small></span>
+              <span class="filter-label">月增率連2月 &gt; 20%<small>近2個月 MoM</small></span>
             </label>
             <label class="filter-item">
               <input type="checkbox" id="filter-marginGrowth" class="filter-checkbox" data-filter="marginGrowth" data-cat="fund">
-              <span class="filter-label">毛利率、營益率較去年成長<br><small style="color:var(--text-dim)">最近季 vs 去年同季</small></span>
+              <span class="filter-label">毛利率、營益率較去年成長<small>最近季 vs 去年同季</small></span>
             </label>
             <label class="filter-item">
               <input type="checkbox" id="filter-noProfitLoss" class="filter-checkbox" data-filter="noProfitLoss" data-cat="fund">
-              <span class="filter-label">公司沒有虧損<br><small style="color:var(--text-dim)">近期淨利 &gt; 0</small></span>
+              <span class="filter-label">公司沒有虧損<small>近期淨利 &gt; 0</small></span>
             </label>
           </div>
         </div>
@@ -135,46 +134,46 @@
         <!-- ── Chip Filters ── -->
         <div class="filter-category">
           <div class="filter-cat-header">
-            <span style="font-size:16px">🎯</span>
+            <span style="font-size:14px">🎯</span>
             <span class="filter-cat-title">籌碼面</span>
             <span class="filter-cat-badge" id="badge-chip">0/6</span>
-            <button class="btn-secondary select-all-btn" data-cat="chip" style="padding:4px 8px;font-size:11px">全選</button>
+            <button class="btn-secondary select-all-btn" data-cat="chip" style="padding:3px 7px;font-size:10px">全選</button>
             <span class="cat-toggle">▾</span>
           </div>
           <div class="filter-body">
             <label class="filter-item">
               <input type="checkbox" id="filter-chipConcentration" class="filter-checkbox" data-filter="chipConcentration" data-cat="chip">
-              <span class="filter-label">籌碼集中度增加<br><small style="color:var(--text-dim)">大戶持股比例提升</small></span>
+              <span class="filter-label">籌碼集中度增加<small>大戶持股比例提升</small></span>
             </label>
             <label class="filter-item">
               <input type="checkbox" id="filter-buyerSellerDiff" class="filter-checkbox" data-filter="buyerSellerDiff" data-cat="chip">
-              <span class="filter-label">近期買賣家數差 &lt; 0<br><small style="color:var(--text-dim)">⚠ V1.3 暫不支援</small></span>
+              <span class="filter-label">近期買賣家數差 &lt; 0<small>⚠ V1.6 暫不支援</small></span>
             </label>
             <label class="filter-item">
               <input type="checkbox" id="filter-foreignBuy" class="filter-checkbox" data-filter="foreignBuy" data-cat="chip">
-              <span class="filter-label">外資買超<br><small style="color:var(--text-dim)">近5日外資淨買超</small></span>
+              <span class="filter-label">外資買超<small>今日外資淨買超</small></span>
             </label>
             <label class="filter-item">
               <input type="checkbox" id="filter-trustBuy" class="filter-checkbox" data-filter="trustBuy" data-cat="chip">
-              <span class="filter-label">投信買超<br><small style="color:var(--text-dim)">近5日投信淨買超</small></span>
+              <span class="filter-label">投信買超<small>今日投信淨買超</small></span>
             </label>
             <label class="filter-item">
               <input type="checkbox" id="filter-bigHolderIncrease" class="filter-checkbox" data-filter="bigHolderIncrease" data-cat="chip">
-              <span class="filter-label">大戶持股比例增加<br><small style="color:var(--text-dim)">集保持股結構</small></span>
+              <span class="filter-label">大戶持股比例增加<small>集保持股結構</small></span>
             </label>
             <label class="filter-item">
               <input type="checkbox" id="filter-institutionalRecord" class="filter-checkbox" data-filter="institutionalRecord" data-cat="chip">
-              <span class="filter-label">法人持股創一季新高<br><small style="color:var(--text-dim)">近13週法人買超高</small></span>
+              <span class="filter-label">法人持股創一季新高<small>近13週法人買超高</small></span>
             </label>
           </div>
         </div>
 
         <!-- Query Button -->
-        <button class="btn-primary" id="queryBtn">
+        <button class="btn-primary" id="queryBtn" style="margin-top:4px">
           <span>🔍</span>&nbsp;開始篩選全市場個股
         </button>
 
-        <div style="height:16px"></div>
+        <div style="height:10px"></div>
       </div>
     </div><!-- /page-screen -->
 
@@ -282,7 +281,7 @@
           <div class="settings-section-title">🚀 關於</div>
           <div class="settings-row">
             <div class="settings-desc" style="line-height:1.9">
-              版本：<strong>V1.5</strong><br>
+              版本：<strong>V1.6</strong><br>
               部署：GitHub Pages（靜態 PWA）<br>
               資料更新：GitHub Actions（每日 14:15）<br>
               篩選引擎：瀏覽器端 JS（無 API 呼叫，瞬間完成）<br><br>
