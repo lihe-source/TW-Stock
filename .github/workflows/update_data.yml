@@ -1,51 +1,81 @@
 name: 每日更新台股資料
 
 on:
-  # 台灣時間 14:15 = UTC 06:15（收盤後約 45 分鐘）
   schedule:
-    - cron: '15 6 * * 1-5'   # 週一到週五
+    # 台灣時間 14:30 = UTC 06:30（確保收盤後資料完整）
+    - cron: '30 6 * * 1-5'
 
-  # 也可手動觸發（測試用）
+  # 手動觸發：可選擇是否啟用財報、限制股票數量
   workflow_dispatch:
     inputs:
-      force:
-        description: '強制重新建置（忽略快取）'
+      enable_financials:
+        description: '啟用 MOPS 財報（毛利率/營益率，較慢）'
         required: false
         default: 'false'
+        type: choice
+        options: ['false', 'true']
+      stock_limit:
+        description: '限制股票數（0=全部，測試用）'
+        required: false
+        default: '0'
 
 jobs:
   build-data:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # 允許 commit & push
+      contents: write
 
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests
+        run: |
+          pip install --upgrade pip
+          pip install requests yfinance beautifulsoup4 lxml
 
       - name: Build screener data
         env:
-          FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+          ENABLE_FINANCIALS: ${{ github.event.inputs.enable_financials || 'false' }}
+          STOCK_LIMIT:       ${{ github.event.inputs.stock_limit || '0' }}
         run: |
-          echo "開始建置資料..."
+          echo "=== 環境 ==="
+          echo "ENABLE_FINANCIALS=$ENABLE_FINANCIALS"
+          echo "STOCK_LIMIT=$STOCK_LIMIT"
+          python3 --version
+          python3 -c "import yfinance; print('yfinance', yfinance.__version__)"
+          echo "=== 開始建置 ==="
           python3 scripts/build_data.py
-          echo "建置完成"
-          ls -lh data/
 
-      - name: Commit & push data
+      - name: Validate output
+        run: |
+          python3 -c "
+          import json, sys
+          d = json.load(open('data/screener.json'))
+          n = d['stockCount']
+          print(f'stockCount : {n}')
+          print(f'dataDate   : {d[\"dataDate\"]}')
+          print(f'source     : {d[\"source\"]}')
+          print(f'coverage   : {d.get(\"coverage\",{})}')
+          if n == 0:
+              print('ERROR: no stocks!')
+              sys.exit(1)
+          # Show sample
+          for s in d['stocks'][:5]:
+              print(f'  {s[\"code\"]} {s[\"name\"]:8s} price={s[\"price\"]:7.2f} rs={s[\"rsScore\"]} rev={s[\"revenue\"]}')
+          "
+
+      - name: Commit & push
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/screener.json data/screener_empty.json
-          # 若無變更則不 commit
-          git diff --staged --quiet && echo "資料無變更，略過 commit" || \
-            git commit -m "chore: 更新台股資料 $(date -u +%Y-%m-%d\ %H:%M\ UTC)"
+          git add data/screener.json
+          git diff --staged --quiet \
+            && echo "資料無變更，略過 commit" \
+            || git commit -m "data: 更新台股資料 $(TZ='Asia/Taipei' date +'%Y-%m-%d %H:%M')"
           git push
