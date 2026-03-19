@@ -1,49 +1,53 @@
 #!/usr/bin/env python3
 """
-台股雷達 — 資料建置腳本  V1.0
+台股雷達 — 資料建置腳本  V1.1
 build_data.py
 
-方案 E：Yahoo Finance + MOPS + TWSE T86（完全免費）
+修正 V1.0 問題：
+  [1] yfinance 成功 0/N 支
+      → 新版 yfinance (>=0.2.40) 改為 MultiIndex 欄位結構 (Price, Ticker)
+      → 修正：使用 df.xs(ticker, level=1, axis=1) 相容新舊版
 
-資料來源：
-  技術面   → yfinance (Yahoo Finance)     : 個股 7 個月 K 線歷史，批次下載
-  基本面   → MOPS 公開資訊觀測站           : 月營收（批次 HTML），財報（選用）
-  籌碼面   → TWSE OpenAPI T86            : 今日三大法人買賣超（全市場）
-  今日行情 → TWSE OpenAPI DAY_ALL        : 收盤價、漲跌、成交量
+  [2] MOPS 月營收 404
+      → URL 路徑錯誤：s02 → sii，且需加 _0 後綴
+      → 錯誤：.../t21/s02/t21sc03_115_03.html
+      → 正確：.../t21/sii/t21sc03_115_03_0.html
+      → 當月資料尚未公告時（次月 10 日前），靜默跳過
 
-執行：
-  本機測試  : python3 scripts/build_data.py
-  GitHub Actions : 自動執行（.github/workflows/update_data.yml）
-
-環境變數（選用）：
-  ENABLE_FINANCIALS=1  → 啟用 MOPS 財報爬取（毛利率、營益率）
-  STOCK_LIMIT=200      → 限制個股數量（測試用）
+資料來源（完全免費）：
+  技術面   → yfinance (Yahoo Finance)  批次 K 線
+  基本面   → MOPS 公開資訊觀測站       月營收
+  籌碼面   → TWSE OpenAPI T86         今日三大法人
+  今日行情 → TWSE OpenAPI DAY_ALL     收盤價
 """
 
 import json
 import os
 import re
-import sys
 import time
 import logging
-import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List, Tuple, Any
 
 import requests
+
+try:
+    import pandas as pd
+    PANDAS_OK = True
+except ImportError:
+    PANDAS_OK = False
+
 try:
     from bs4 import BeautifulSoup
     BS4_OK = True
 except ImportError:
     BS4_OK = False
-    print("[WARNING] beautifulsoup4 not installed. MOPS parsing will use regex fallback.")
 
 try:
     import yfinance as yf
     YF_OK = True
 except ImportError:
     YF_OK = False
-    print("[WARNING] yfinance not installed. Technical indicators will use TWSE fallback.")
 
 # ─────────────────────────────────────────────
 #  設定
@@ -59,18 +63,19 @@ TWSE_DAY_ALL   = 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'
 TWSE_LISTED    = 'https://openapi.twse.com.tw/v1/opendata/t187ap03_L'
 TWSE_T86       = 'https://openapi.twse.com.tw/v1/fund/T86'
 TWSE_STOCK_DAY = 'https://www.twse.com.tw/exchangeReport/STOCK_DAY'
-MOPS_REVENUE   = 'https://mops.twse.com.tw/nas/t21/s02/t21sc03_{roc_year}_{month:02d}.html'
-MOPS_FIN_URL   = 'https://mops.twse.com.tw/mops/web/ajax_t163sb04'
+
+# 正確的 MOPS 月營收 URL（上市公司 sii，加 _0 後綴）
+MOPS_REVENUE_SII = 'https://mops.twse.com.tw/nas/t21/sii/t21sc03_{roc_year}_{month:02d}_0.html'
 
 ENABLE_FINANCIALS = os.environ.get('ENABLE_FINANCIALS', '0') == '1'
-STOCK_LIMIT       = int(os.environ.get('STOCK_LIMIT', '0'))  # 0 = no limit
+STOCK_LIMIT       = int(os.environ.get('STOCK_LIMIT', '0'))
 OUTPUT_PATH       = 'data/screener.json'
 TW_TZ             = timezone(timedelta(hours=8))
 
-YFINANCE_CHUNK    = 100     # stocks per yfinance batch call
-YFINANCE_PERIOD   = '7mo'   # 7 months of history
-MOPS_REV_MONTHS   = 24      # how many months of revenue to fetch
-MOPS_SLEEP        = 1.2     # seconds between MOPS requests
+YFINANCE_CHUNK    = 50      # 降低每批數量，避免 timeout（舊版 100 有時不穩）
+YFINANCE_PERIOD   = '7mo'
+MOPS_REV_MONTHS   = 24
+MOPS_SLEEP        = 1.5     # 稍微加長，避免 MOPS 封鎖
 TWSE_SLEEP        = 0.4
 
 # ─────────────────────────────────────────────
@@ -79,20 +84,28 @@ TWSE_SLEEP        = 0.4
 SESSION = requests.Session()
 SESSION.headers.update({
     'Accept':          'text/html,application/json,*/*',
-    'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.8',
-    'User-Agent':      'Mozilla/5.0 (compatible; TaiwanStockRadar/1.0)',
+    'Accept-Language': 'zh-TW,zh;q=0.9',
+    'User-Agent':      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                       'AppleWebKit/537.36 (KHTML, like Gecko) '
+                       'Chrome/120.0.0.0 Safari/537.36',
 })
 
-def get(url: str, params: dict = None, method: str = 'GET',
-        data: dict = None, retries: int = 3, timeout: int = 30) -> requests.Response:
+def get(url: str, params: dict = None, retries: int = 3, timeout: int = 30) -> requests.Response:
     for attempt in range(retries):
         try:
-            if method == 'POST':
-                r = SESSION.post(url, data=data, timeout=timeout)
-            else:
-                r = SESSION.get(url, params=params, timeout=timeout)
+            r = SESSION.get(url, params=params, timeout=timeout)
             r.raise_for_status()
             return r
+        except requests.exceptions.HTTPError as e:
+            code = e.response.status_code if e.response is not None else 0
+            if code == 404:
+                raise   # 404 不重試
+            if attempt < retries - 1:
+                wait = 2 ** attempt
+                log.warning(f'  retry {attempt+1}/{retries}: {e} (wait {wait}s)')
+                time.sleep(wait)
+            else:
+                raise
         except Exception as e:
             if attempt < retries - 1:
                 wait = 2 ** attempt
@@ -101,29 +114,22 @@ def get(url: str, params: dict = None, method: str = 'GET',
             else:
                 raise
 
-def get_json(url: str, params: dict = None, retries: int = 3) -> Any:
-    return get(url, params=params, retries=retries).json()
+def get_json(url: str, params: dict = None) -> Any:
+    return get(url, params=params).json()
 
-def date_ago(months: int) -> datetime:
-    return datetime.now(TW_TZ) - timedelta(days=months * 30)
+def is_equity(code: str) -> bool:
+    return bool(code and re.match(r'^[1-9]\d{3}$', code))
+
+def date_now() -> datetime:
+    return datetime.now(TW_TZ)
 
 # ─────────────────────────────────────────────
 #  TWSE helpers
 # ─────────────────────────────────────────────
-def is_equity(code: str) -> bool:
-    """4 位數字，非 0 開頭（排除 ETF、權證）"""
-    return bool(code and re.match(r'^[1-9]\d{3}$', code))
-
 def load_twse_day_all() -> Tuple[Dict[str, dict], Dict[str, dict]]:
-    """
-    回傳 (stocks_base, names_only)
-    stocks_base: 有行情資料的股票  {code: {name,price,change,pct,high,low,vol}}
-    names_only:  只有名稱的股票（非交易日備援）
-    """
     stocks_base: Dict[str, dict] = {}
     names_only:  Dict[str, dict] = {}
 
-    # Layer 1: DAY_ALL
     try:
         raw = get_json(TWSE_DAY_ALL)
         for s in (raw or []):
@@ -144,9 +150,9 @@ def load_twse_day_all() -> Tuple[Dict[str, dict], Dict[str, dict]]:
             chg   = -chg_a if (chg_r.startswith('▼') or chg_r.startswith('-')) else chg_a
             base  = (price - chg) or price
             pct   = round(chg / base * 100, 2) if base else 0.0
-            name  = (s.get('Name') or code).strip()
             stocks_base[code] = {
-                'code': code, 'name': name,
+                'code': code,
+                'name': (s.get('Name') or code).strip(),
                 'price': price, 'change': round(chg, 2), 'pct': pct,
                 'high': float((s.get('HighestPrice') or str(price)).replace(',', '')),
                 'low':  float((s.get('LowestPrice')  or str(price)).replace(',', '')),
@@ -156,27 +162,26 @@ def load_twse_day_all() -> Tuple[Dict[str, dict], Dict[str, dict]]:
     except Exception as e:
         log.warning(f'  DAY_ALL 失敗: {e}')
 
-    # Layer 2: company list (always available)
     try:
-        raw = get_json(TWSE_LISTED)
-        for s in (raw or []):
+        for s in (get_json(TWSE_LISTED) or []):
             code = (s.get('公司代號') or '').strip()
             if not is_equity(code):
                 continue
-            name = (s.get('公司名稱') or code).strip()
-            names_only[code] = {'code': code, 'name': name}
+            names_only[code] = {
+                'code': code,
+                'name': (s.get('公司名稱') or code).strip(),
+            }
         log.info(f'  t187ap03_L: {len(names_only)} 筆')
     except Exception as e:
         log.warning(f'  t187ap03_L 失敗: {e}')
 
     return stocks_base, names_only
 
+
 def load_t86() -> Dict[str, dict]:
-    """T86 三大法人今日買賣超 → {code: {foreignNet, trustNet, foreignBuy, trustBuy}}"""
     inst: Dict[str, dict] = {}
     try:
-        raw = get_json(TWSE_T86)
-        for s in (raw or []):
+        for s in (get_json(TWSE_T86) or []):
             code = (s.get('Code') or s.get('證券代號') or '').strip()
             if not code:
                 continue
@@ -204,96 +209,163 @@ def load_t86() -> Dict[str, dict]:
         log.warning(f'  T86 失敗: {e}')
     return inst
 
+
 # ─────────────────────────────────────────────
-#  yfinance — 批次下載 K 線
+#  yfinance — 修正版（相容新舊版 MultiIndex）
 # ─────────────────────────────────────────────
+def _extract_df_for_ticker(raw, ticker: str):
+    """
+    從 yfinance.download() 結果中取出單支股票的 DataFrame。
+    相容新版（MultiIndex: Price×Ticker）與舊版（直接欄位）。
+    """
+    if not PANDAS_OK:
+        return None
+
+    try:
+        if isinstance(raw.columns, pd.MultiIndex):
+            # 新版 yfinance (>=0.2.40):
+            # columns = MultiIndex [('Close','2330.TW'),('High','2330.TW'), ...]
+            # Level 0 = Price field, Level 1 = Ticker
+            level1_vals = raw.columns.get_level_values(1)
+            if ticker not in level1_vals:
+                return None
+            df = raw.xs(ticker, level=1, axis=1)
+            return df
+        else:
+            # 舊版 or 單支下載：直接是 OHLCV columns
+            return raw
+    except Exception as e:
+        log.debug(f'  _extract_df_for_ticker {ticker}: {e}')
+        return None
+
+
+def _safe_float(val) -> Optional[float]:
+    """安全轉 float，處理 Series/scalar 兩種情況"""
+    try:
+        if PANDAS_OK and isinstance(val, pd.Series):
+            v = val.iloc[0]
+        else:
+            v = val
+        f = float(v)
+        return f if not (f != f) else None  # check NaN
+    except Exception:
+        return None
+
+
 def download_price_history(codes: List[str]) -> Dict[str, List[dict]]:
-    """
-    批次下載所有個股 7 個月 K 線，回傳 {code: [{date,close,max,min}, ...] 最新在前}
-    使用 yfinance 的群組下載，比逐支呼叫快約 20 倍。
-    """
     if not YF_OK:
-        log.warning('  yfinance 未安裝，跳過技術指標計算')
+        log.warning('  yfinance 未安裝，跳過技術指標')
         return {}
 
     result: Dict[str, List[dict]] = {}
     tickers = [f'{c}.TW' for c in codes]
-
-    log.info(f'  yfinance 批次下載 {len(tickers)} 支（分 {-(-len(tickers)//YFINANCE_CHUNK)} 批）...')
+    total_batches = -(-len(tickers) // YFINANCE_CHUNK)
+    log.info(f'  下載 {len(tickers)} 支，共 {total_batches} 批（每批 {YFINANCE_CHUNK} 支）')
 
     for i in range(0, len(tickers), YFINANCE_CHUNK):
-        chunk = tickers[i:i+YFINANCE_CHUNK]
-        chunk_codes = codes[i:i+YFINANCE_CHUNK]
-        batch_num = i // YFINANCE_CHUNK + 1
-        total_batches = -(-len(tickers) // YFINANCE_CHUNK)
-        log.info(f'    批次 {batch_num}/{total_batches}: {chunk[0]} ~ {chunk[-1]}')
+        chunk_tickers = tickers[i:i+YFINANCE_CHUNK]
+        chunk_codes   = codes[i:i+YFINANCE_CHUNK]
+        bn = i // YFINANCE_CHUNK + 1
+        log.info(f'  批次 {bn}/{total_batches}: {chunk_tickers[0]} ~ {chunk_tickers[-1]}')
 
         try:
-            # auto_adjust=True 自動調整還原權息
             raw = yf.download(
-                chunk,
+                chunk_tickers,
                 period=YFINANCE_PERIOD,
                 auto_adjust=True,
                 progress=False,
-                group_by='ticker',
-                threads=True,    # 並行下載
+                # 不傳 group_by 讓 yfinance 用預設（新版自動 MultiIndex）
             )
         except Exception as e:
-            log.warning(f'    批次 {batch_num} 失敗: {e}')
+            log.warning(f'  批次 {bn} 下載失敗: {e}')
             continue
 
-        for ticker, code in zip(chunk, chunk_codes):
+        if raw is None or raw.empty:
+            log.warning(f'  批次 {bn} 回傳空資料')
+            continue
+
+        success = 0
+        for ticker, code in zip(chunk_tickers, chunk_codes):
             try:
-                if len(chunk) == 1:
-                    # single ticker: raw 是 DataFrame
+                if len(chunk_tickers) == 1:
+                    # 單支下載：直接是 DataFrame
                     df = raw
                 else:
-                    df = raw[ticker] if ticker in raw.columns.get_level_values(1) else None
-                    if df is None:
-                        continue
+                    df = _extract_df_for_ticker(raw, ticker)
 
                 if df is None or df.empty:
                     continue
 
                 rows = []
                 for date_idx, row in df.iterrows():
-                    try:
-                        close = float(row['Close'])
-                        high  = float(row.get('High', close))
-                        low   = float(row.get('Low',  close))
-                        if close <= 0:
-                            continue
-                        rows.append({
-                            'date':  date_idx.strftime('%Y-%m-%d'),
-                            'close': round(close, 2),
-                            'max':   round(high,  2),
-                            'min':   round(low,   2),
-                        })
-                    except Exception:
-                        pass
+                    close = _safe_float(row.get('Close') or row.get('close'))
+                    high  = _safe_float(row.get('High')  or row.get('high'))
+                    low   = _safe_float(row.get('Low')   or row.get('low'))
+                    if close is None or close <= 0:
+                        continue
+                    rows.append({
+                        'date':  date_idx.strftime('%Y-%m-%d'),
+                        'close': round(close, 2),
+                        'max':   round(high or close, 2),
+                        'min':   round(low  or close, 2),
+                    })
+
                 rows.sort(key=lambda x: x['date'], reverse=True)
                 if rows:
                     result[code] = rows
+                    success += 1
+
             except Exception as e:
-                log.debug(f'    {code}: {e}')
+                log.debug(f'  {code}: {e}')
 
-        time.sleep(0.5)  # polite pause between batches
+        log.info(f'  批次 {bn} 完成：{success}/{len(chunk_codes)} 支成功')
+        time.sleep(0.8)
 
-    log.info(f'  yfinance 完成: 成功 {len(result)}/{len(codes)} 支')
+    log.info(f'  yfinance 總計：成功 {len(result)}/{len(codes)} 支')
     return result
 
 
+def download_single(ticker_tw: str) -> List[dict]:
+    """下載單支股票（如 0050.TW）"""
+    if not YF_OK:
+        return []
+    try:
+        raw = yf.download(ticker_tw, period=YFINANCE_PERIOD,
+                          auto_adjust=True, progress=False)
+        if raw is None or raw.empty:
+            return []
+        rows = []
+        for date_idx, row in raw.iterrows():
+            close = _safe_float(row.get('Close') or row.get('close'))
+            high  = _safe_float(row.get('High')  or row.get('high'))
+            low   = _safe_float(row.get('Low')   or row.get('low'))
+            if close is None or close <= 0:
+                continue
+            rows.append({
+                'date':  date_idx.strftime('%Y-%m-%d'),
+                'close': round(close, 2),
+                'max':   round(high or close, 2),
+                'min':   round(low  or close, 2),
+            })
+        rows.sort(key=lambda x: x['date'], reverse=True)
+        return rows
+    except Exception as e:
+        log.warning(f'  download_single {ticker_tw}: {e}')
+        return []
+
+
 # ─────────────────────────────────────────────
-#  TWSE STOCK_DAY — 免費備援（無 yfinance 時）
+#  TWSE STOCK_DAY — 免費備援
 # ─────────────────────────────────────────────
 def twse_stock_history(code: str, months: int = 7) -> List[dict]:
     rows = []
-    now  = datetime.now(TW_TZ)
+    now  = date_now()
     for m in range(months):
         target   = now - timedelta(days=m * 30)
         yyyymmdd = target.strftime('%Y%m01')
         try:
-            j = get_json(TWSE_STOCK_DAY, {'response':'json','date':yyyymmdd,'stockNo':code})
+            j = get_json(TWSE_STOCK_DAY,
+                         {'response':'json','date':yyyymmdd,'stockNo':code})
             for row in j.get('data', []):
                 try:
                     parts = row[0].strip().split('/')
@@ -302,7 +374,8 @@ def twse_stock_history(code: str, months: int = 7) -> List[dict]:
                     close = float(row[6].replace(',', ''))
                     high  = float(row[4].replace(',', ''))
                     low   = float(row[5].replace(',', ''))
-                    rows.append({'date': iso, 'close': close, 'max': high, 'min': low})
+                    rows.append({'date': iso, 'close': close,
+                                 'max': high, 'min': low})
                 except Exception:
                     pass
             time.sleep(TWSE_SLEEP)
@@ -313,156 +386,110 @@ def twse_stock_history(code: str, months: int = 7) -> List[dict]:
 
 
 # ─────────────────────────────────────────────
-#  MOPS 月營收 — 批次抓取（每次 1 個月，全部公司）
+#  MOPS 月營收 — 修正版
+#  正確 URL：.../t21/sii/t21sc03_{roc}_{mm:02d}_0.html
 # ─────────────────────────────────────────────
-def load_mops_revenue_all_months(months: int = MOPS_REV_MONTHS) -> Dict[str, List[dict]]:
+def load_mops_revenue_all() -> Dict[str, List[dict]]:
     """
-    從 MOPS 批次下載所有公司月營收資料（過去 N 個月）。
-    回傳 {code: [{date:'YYYY-MM-01', revenue:float}, ...]} 按日期降序。
-
-    MOPS URL: https://mops.twse.com.tw/nas/t21/s02/t21sc03_{民國年}_{月:02d}.html
-    HTML 表格欄位（上市公司）：
-      公司代號 | 公司名稱 | 當月營收 | 上月營收 | 去年當月營收 | 上月增減(%) | 去年同月增減(%)
+    批次下載 MOPS 所有公司月營收（過去 N 個月）。
+    每次 1 個 HTML 檔 = 所有上市公司，共 N 次請求。
+    回傳 {code: [{date, revenue}, ...]} 降序。
     """
-    revenue_map: Dict[str, List[dict]] = {}  # code → list of {date, revenue}
-    now = datetime.now(TW_TZ)
+    revenue_map: Dict[str, List[dict]] = {}
+    now     = date_now()
+    fetched = 0
 
-    log.info(f'  MOPS 月營收：抓取最近 {months} 個月...')
+    log.info(f'  MOPS 月營收：最多抓 {MOPS_REV_MONTHS} 個月...')
 
-    for m in range(months):
-        target    = now - timedelta(days=m * 30)
-        roc_year  = target.year - 1911
-        month     = target.month
-        url       = MOPS_REVENUE.format(roc_year=roc_year, month=month)
-        iso_date  = f'{target.year}-{month:02d}-01'
+    for m in range(MOPS_REV_MONTHS):
+        target   = now - timedelta(days=m * 30)
+        roc_year = target.year - 1911
+        month    = target.month
+        iso_date = f'{target.year}-{month:02d}-01'
+
+        # 月營收通常次月 10 日後才公告；當月 / 次月初可能尚未發布
+        # 以目前日期判斷：若資料月份為本月，靜默跳過
+        if target.year == now.year and target.month == now.month:
+            log.debug(f'  跳過 {target.year}/{month:02d}（當月未公告）')
+            continue
+
+        url = MOPS_REVENUE_SII.format(roc_year=roc_year, month=month)
 
         try:
-            r   = get(url, timeout=30)
-            # MOPS HTML uses big5 or utf-8 encoding; detect from response
-            enc = r.encoding or 'big5'
+            r    = get(url, timeout=35)
+            enc  = r.apparent_encoding or 'big5'
             html = r.content.decode(enc, errors='replace')
 
-            parsed = _parse_mops_revenue_html(html, iso_date)
+            parsed = _parse_revenue_html(html, iso_date)
+            if not parsed:
+                log.debug(f'  {target.year}/{month:02d}: 解析 0 筆（可能格式變更）')
+                continue
+
             for code, rev in parsed.items():
-                revenue_map.setdefault(code, []).append({'date': iso_date, 'revenue': rev})
-            log.info(f'    {target.year}/{month:02d}: {len(parsed)} 筆')
+                revenue_map.setdefault(code, []).append(
+                    {'date': iso_date, 'revenue': rev})
+            fetched += 1
+            log.info(f'  {target.year}/{month:02d}: {len(parsed)} 筆')
             time.sleep(MOPS_SLEEP)
 
+        except requests.exceptions.HTTPError as e:
+            code_http = e.response.status_code if e.response else 0
+            if code_http == 404:
+                # 資料尚未發布，靜默跳過
+                log.debug(f'  {target.year}/{month:02d}: 尚未發布 (404)')
+            else:
+                log.warning(f'  {target.year}/{month:02d}: HTTP {code_http}')
         except Exception as e:
-            log.warning(f'    MOPS {roc_year}/{month:02d} 失敗: {e}')
+            log.warning(f'  MOPS {roc_year}/{month:02d} 失敗: {e}')
 
-    # Sort each company's revenue descending by date
+    # Sort descending
     for code in revenue_map:
         revenue_map[code].sort(key=lambda x: x['date'], reverse=True)
 
-    log.info(f'  MOPS 月營收完成：{len(revenue_map)} 支公司')
+    log.info(f'  MOPS 完成：{fetched} 個月，{len(revenue_map)} 支公司')
     return revenue_map
 
 
-def _parse_mops_revenue_html(html: str, iso_date: str) -> Dict[str, float]:
-    """解析 MOPS 月營收 HTML，回傳 {code: revenue_float}"""
+def _parse_revenue_html(html: str, iso_date: str) -> Dict[str, float]:
     result: Dict[str, float] = {}
 
     if BS4_OK:
         try:
-            soup = BeautifulSoup(html, 'html.parser')
-            tables = soup.find_all('table')
-            for table in tables:
-                rows = table.find_all('tr')
-                for row in rows:
-                    cells = row.find_all('td')
-                    if len(cells) < 3:
-                        continue
-                    code = cells[0].get_text(strip=True)
-                    if not is_equity(code):
-                        continue
-                    rev_str = cells[2].get_text(strip=True).replace(',', '').replace(' ', '')
-                    try:
-                        rev = float(rev_str)
-                        if rev > 0:
-                            result[code] = rev
-                    except ValueError:
-                        pass
-        except Exception as e:
-            log.debug(f'  BeautifulSoup 解析失敗: {e}，改用 regex')
-            result = _parse_mops_revenue_regex(html)
-    else:
-        result = _parse_mops_revenue_regex(html)
-
-    return result
-
-
-def _parse_mops_revenue_regex(html: str) -> Dict[str, float]:
-    """regex 備援解析 MOPS 月營收"""
-    result: Dict[str, float] = {}
-    # Pattern: <td>4-digit code</td><td>name</td><td>revenue with commas</td>
-    pattern = r'<td[^>]*>\s*([1-9]\d{3})\s*</td>\s*<td[^>]*>[^<]*</td>\s*<td[^>]*>\s*([\d,]+)\s*</td>'
-    for m in re.finditer(pattern, html, re.IGNORECASE):
-        code    = m.group(1).strip()
-        rev_str = m.group(2).replace(',', '').strip()
-        try:
-            rev = float(rev_str)
-            if rev > 0:
-                result[code] = rev
-        except ValueError:
+            soup = BeautifulSoup(html, 'lxml')
+            # Try to find rows with 4-digit code in first cell
+            for row in soup.find_all('tr'):
+                cells = row.find_all('td')
+                if len(cells) < 3:
+                    continue
+                code = cells[0].get_text(strip=True)
+                if not is_equity(code):
+                    continue
+                rev_str = cells[2].get_text(strip=True).replace(',', '').replace(' ', '')
+                try:
+                    rev = float(rev_str)
+                    if rev > 0:
+                        result[code] = rev
+                except ValueError:
+                    pass
+        except Exception:
             pass
+
+    # Regex fallback (or supplement)
+    if not result:
+        pattern = (r'<td[^>]*>\s*([1-9]\d{3})\s*</td>'
+                   r'\s*<td[^>]*>[^<]*</td>'
+                   r'\s*<td[^>]*>\s*([\d,]+)\s*</td>')
+        for m in re.finditer(pattern, html, re.IGNORECASE | re.DOTALL):
+            code    = m.group(1)
+            rev_str = m.group(2).replace(',', '')
+            try:
+                rev = float(rev_str)
+                if rev > 0:
+                    result[code] = rev
+            except ValueError:
+                pass
+
     return result
-
-
-# ─────────────────────────────────────────────
-#  MOPS 財報（選用，逐支公司）
-# ─────────────────────────────────────────────
-def load_mops_financials(code: str) -> List[dict]:
-    """
-    從 MOPS 取得個股最近季度財報。
-    只有 ENABLE_FINANCIALS=1 時才呼叫。
-    回傳 [{date, type, value}, ...] 格式（與 FinMind 相容）
-    """
-    if not ENABLE_FINANCIALS:
-        return []
-    try:
-        now     = datetime.now(TW_TZ)
-        season  = (now.month - 1) // 3  # 0~3
-        if season == 0:
-            year, season = now.year - 1, 4
-        else:
-            year = now.year
-
-        result = []
-        for q_back in range(4):  # 最近 4 季
-            q      = season - q_back
-            yr     = year
-            if q <= 0:
-                q  += 4
-                yr -= 1
-            date_str = f'{yr}-{q*3:02d}-01'
-
-            data = {'encodeURIComponent': 1,
-                    'step':    1,
-                    'CO_ID':   code,
-                    'SYEAR':   yr,
-                    'SSEASON': q,
-                    'report_id': 'C'}
-            r    = get(MOPS_FIN_URL, method='POST', data=data, timeout=25)
-            html = r.text
-
-            # Parse gross profit margin, operating income from HTML
-            for match in re.finditer(
-                r'(毛利率|營業利益率|本期淨利)[^\d\-]*([\-\d\.]+)\s*%', html):
-                label = match.group(1)
-                val   = float(match.group(2))
-                type_map = {'毛利率': 'gross_margin_pct',
-                            '營業利益率': 'op_margin_pct',
-                            '本期淨利': 'NetIncome'}
-                result.append({'date': date_str,
-                                'type': type_map.get(label, label),
-                                'value': val})
-            time.sleep(MOPS_SLEEP)
-
-        return result
-    except Exception as e:
-        log.debug(f'  MOPS 財報 {code}: {e}')
-        return []
 
 
 # ─────────────────────────────────────────────
@@ -472,50 +499,7 @@ def avg(lst: list) -> float:
     return sum(lst) / len(lst) if lst else 0.0
 
 
-def calc_technical(prices: List[dict], proxy: List[dict]) -> dict:
-    if not prices:
-        return {}
-    closes = [float(p['close']) for p in prices]
-    cur    = closes[0]
-
-    def ma(n):
-        return avg(closes[:n]) if len(closes) >= n else None
-
-    ma5, ma10, ma20 = ma(5), ma(10), ma(20)
-    ma60, ma120     = ma(60), ma(120)
-
-    short_align = None
-    if all(x is not None for x in [ma5, ma10, ma20]):
-        short_align = bool(ma5 > ma10 > ma20)
-
-    long_align = None
-    if all(x is not None for x in [ma20, ma60, ma120]):
-        long_align = bool(ma20 > ma60 > ma120)
-
-    above_sub = None
-    if len(prices) >= 61:
-        above_sub = bool(cur > float(prices[19]['close']) and
-                         cur > float(prices[59]['close']))
-
-    dist_high = None
-    lk = min(22, len(prices))
-    if lk:
-        mh = max(float(p.get('max', p['close'])) for p in prices[:lk])
-        dist_high = round(((cur / mh) - 1) * 100, 2) if mh else None
-
-    # RS 指標（個股 vs 0050 大盤代理，26 週）
-    rs = _calc_rs(prices, proxy)
-
-    return {
-        'rsScore':          rs,
-        'shortMAAlign':     short_align,
-        'longMAAlign':      long_align,
-        'aboveSubPoint':    above_sub,
-        'distanceFromHigh': dist_high,
-    }
-
-
-def _calc_rs(sp: List[dict], tp: List[dict]) -> Optional[float]:
+def calc_rs(sp: List[dict], tp: List[dict]) -> Optional[float]:
     n = min(130, len(sp)-1, len(tp)-1)
     if n < 20:
         return None
@@ -533,13 +517,45 @@ def _calc_rs(sp: List[dict], tp: List[dict]) -> Optional[float]:
         return None
 
 
+def calc_technical(prices: List[dict], proxy: List[dict]) -> dict:
+    if not prices:
+        return {}
+    closes = [float(p['close']) for p in prices]
+    cur    = closes[0]
+
+    def ma(n):
+        return avg(closes[:n]) if len(closes) >= n else None
+
+    ma5, ma10, ma20 = ma(5), ma(10), ma(20)
+    ma60, ma120     = ma(60), ma(120)
+
+    short_align = (bool(ma5 > ma10 > ma20)
+                   if all(x is not None for x in [ma5, ma10, ma20]) else None)
+    long_align  = (bool(ma20 > ma60 > ma120)
+                   if all(x is not None for x in [ma20, ma60, ma120]) else None)
+    above_sub   = (bool(cur > float(prices[19]['close']) and
+                        cur > float(prices[59]['close']))
+                   if len(prices) >= 61 else None)
+
+    dist_high = None
+    lk = min(22, len(prices))
+    if lk:
+        mh = max(float(p.get('max', p['close'])) for p in prices[:lk])
+        dist_high = round(((cur / mh) - 1) * 100, 2) if mh else None
+
+    return {
+        'rsScore':          calc_rs(prices, proxy),
+        'shortMAAlign':     short_align,
+        'longMAAlign':      long_align,
+        'aboveSubPoint':    above_sub,
+        'distanceFromHigh': dist_high,
+    }
+
+
 def calc_revenue(rev_list: List[dict]) -> dict:
-    """
-    rev_list: [{date:'YYYY-MM-01', revenue:float}, ...] 降序
-    """
     if len(rev_list) < 3:
         return {}
-    s  = rev_list  # already sorted descending
+    s  = rev_list   # already sorted descending
     l  = s[0]
     lv = float(l['revenue'])
 
@@ -577,106 +593,57 @@ def calc_revenue(rev_list: List[dict]) -> dict:
     }
 
 
-def calc_financials_from_mops(data: List[dict]) -> dict:
-    """解析 MOPS 財報資料（毛利率、營益率格式）"""
-    if not data:
-        return {}
-    # Group by date
-    by_date: Dict[str, dict] = {}
-    for item in data:
-        d = item.get('date', '')
-        by_date.setdefault(d, {})[item.get('type', '')] = float(item.get('value', 0))
-
-    dates = sorted(by_date.keys(), reverse=True)
-    if not dates:
-        return {}
-    l  = by_date[dates[0]]
-    ly = by_date[dates[4]] if len(dates) > 4 else None
-
-    gm = l.get('gross_margin_pct')
-    om = l.get('op_margin_pct')
-    ni = l.get('NetIncome')
-
-    gm_grow = om_grow = None
-    if ly:
-        ly_gm = ly.get('gross_margin_pct')
-        ly_om = ly.get('op_margin_pct')
-        if gm is not None and ly_gm is not None:
-            gm_grow = gm > ly_gm
-        if om is not None and ly_om is not None:
-            om_grow = om > ly_om
-
-    return {
-        'grossMargin':  round(gm, 2) if gm is not None else None,
-        'opMargin':     round(om, 2) if om is not None else None,
-        'noProfitLoss': (ni > 0) if ni is not None else None,
-        'marginGrowth': (gm_grow and om_grow) if (
-                         gm_grow is not None and om_grow is not None) else None,
-    }
-
-
 # ─────────────────────────────────────────────
 #  主流程
 # ─────────────────────────────────────────────
 def main():
-    log.info('=== 台股雷達資料建置 V1.0 開始 ===')
-    log.info(f'yfinance: {"✓" if YF_OK else "✗ (用 TWSE 備援)"}')
-    log.info(f'BeautifulSoup4: {"✓" if BS4_OK else "✗ (用 regex 備援)"}')
-    log.info(f'ENABLE_FINANCIALS: {ENABLE_FINANCIALS}')
-    log.info(f'STOCK_LIMIT: {STOCK_LIMIT if STOCK_LIMIT else "無限制"}')
+    log.info('=== 台股雷達資料建置 V1.1 開始 ===')
+    log.info(f'yfinance:  {"✓" if YF_OK else "✗ 使用 TWSE 備援"}')
+    log.info(f'pandas:    {"✓" if PANDAS_OK else "✗"}')
+    log.info(f'bs4:       {"✓" if BS4_OK else "✗ 使用 regex 備援"}')
 
-    tw_now    = datetime.now(TW_TZ)
+    tw_now    = date_now()
     data_date = tw_now.strftime('%Y-%m-%d')
 
     # ── Step 1: TWSE 個股清單 + 今日行情 ──
     log.info('Step 1: TWSE 個股清單 + 行情...')
     stocks_base, names_only = load_twse_day_all()
 
-    # Merge: use stocks_base primarily, fill in names_only for those with prices
     all_codes_set = set(stocks_base.keys()) | set(names_only.keys())
     if STOCK_LIMIT:
         all_codes_set = set(sorted(all_codes_set)[:STOCK_LIMIT])
-        log.info(f'  STOCK_LIMIT 生效，限制 {STOCK_LIMIT} 支')
-
+        log.info(f'  STOCK_LIMIT={STOCK_LIMIT}')
     all_codes = sorted(all_codes_set)
-    log.info(f'  總計 {len(all_codes)} 支股票')
+    log.info(f'  共 {len(all_codes)} 支股票')
 
-    # ── Step 2: TWSE T86 法人 ──
-    log.info('Step 2: TWSE T86 法人買賣超...')
+    # ── Step 2: T86 法人 ──
+    log.info('Step 2: TWSE T86 法人...')
     inst_today = load_t86()
 
-    # ── Step 3: yfinance 批次下載 K 線 ──
-    log.info('Step 3: yfinance 批次下載 K 線歷史...')
+    # ── Step 3: yfinance 批次 K 線 ──
+    log.info('Step 3: yfinance 批次下載 K 線...')
     price_history: Dict[str, List[dict]] = {}
     if YF_OK:
         price_history = download_price_history(all_codes)
     else:
-        log.info('  yfinance 不可用，將逐支從 TWSE 取歷史（較慢）')
+        log.info('  yfinance 不可用，逐支從 TWSE 取歷史（較慢）')
 
-    # 大盤代理（0050）
-    proxy: List[dict] = price_history.get('0050', [])
+    # 大盤代理 0050
+    proxy = price_history.get('0050', [])
     if not proxy:
-        log.info('  0050 未在批次結果中，單獨下載...')
-        if YF_OK:
-            try:
-                raw  = yf.download('0050.TW', period=YFINANCE_PERIOD,
-                                   auto_adjust=True, progress=False)
-                proxy = [{'date': d.strftime('%Y-%m-%d'),
-                          'close': round(float(row['Close']),2),
-                          'max':   round(float(row['High']),2),
-                          'min':   round(float(row['Low']),2)}
-                         for d, row in raw.iterrows() if float(row['Close']) > 0]
-                proxy.sort(key=lambda x: x['date'], reverse=True)
-                log.info(f'  0050: {len(proxy)} 筆')
-            except Exception as e:
-                log.warning(f'  0050 下載失敗: {e}')
-        if not proxy:
+        log.info('  單獨下載 0050...')
+        proxy = download_single('0050.TW')
+        if proxy:
+            price_history['0050'] = proxy
+            log.info(f'  0050: {len(proxy)} 筆')
+        else:
+            log.info('  0050 yfinance 失敗，改用 TWSE...')
             proxy = twse_stock_history('0050', 7)
-            log.info(f'  0050 (TWSE backup): {len(proxy)} 筆')
+            log.info(f'  0050 (TWSE): {len(proxy)} 筆')
 
     # ── Step 4: MOPS 月營收 ──
-    log.info('Step 4: MOPS 月營收（批次）...')
-    revenue_all = load_mops_revenue_all_months(MOPS_REV_MONTHS)
+    log.info('Step 4: MOPS 月營收...')
+    revenue_all = load_mops_revenue_all()
 
     # ── Step 5: 組合計算 ──
     log.info('Step 5: 計算個股指標...')
@@ -686,7 +653,7 @@ def main():
         if i > 0 and i % 200 == 0:
             log.info(f'  進度: {i}/{len(all_codes)}...')
 
-        base = stocks_base.get(code) or names_only.get(code) or {'code': code, 'name': code}
+        base = stocks_base.get(code) or names_only.get(code) or {'code':code,'name':code}
         inst = inst_today.get(code, {})
 
         r: dict = {
@@ -698,18 +665,15 @@ def main():
             'high':   base.get('high',   0),
             'low':    base.get('low',    0),
             'vol':    base.get('vol',    0),
-            # 法人（T86 今日）
             'foreignNet':  inst.get('foreignNet', None),
             'trustNet':    inst.get('trustNet',   None),
             'foreignBuy':  inst.get('foreignBuy', None),
             'trustBuy':    inst.get('trustBuy',   None),
-            # 技術指標（預設 None）
             'rsScore':           None,
             'distanceFromHigh':  None,
             'shortMAAlign':      None,
             'longMAAlign':       None,
             'aboveSubPoint':     None,
-            # 基本面（預設 None）
             'revenue':           None,
             'revenueDate':       None,
             'yoyLatest':         None,
@@ -721,7 +685,6 @@ def main():
             'opMargin':          None,
             'noProfitLoss':      None,
             'marginGrowth':      None,
-            # 籌碼（無免費來源，保留欄位）
             'institutionalRecord': None,
             'bigHolderPct':        None,
             'bigHolderIncrease':   None,
@@ -734,7 +697,6 @@ def main():
             px = twse_stock_history(code, 7)
         if px:
             r.update(calc_technical(px, proxy))
-            # 補行情（非交易日 TWSE 無收盤）
             if not r['price'] or r['price'] == 0:
                 try:
                     r['price'] = float(px[0]['close'])
@@ -746,44 +708,33 @@ def main():
         if rev_list:
             r.update(calc_revenue(rev_list))
 
-        # 財報（選用）
-        if ENABLE_FINANCIALS:
-            fin_data = load_mops_financials(code)
-            if fin_data:
-                r.update(calc_financials_from_mops(fin_data))
-
         results.append(r)
 
-    log.info(f'  指標計算完成：{len(results)} 支')
-
-    # ── Step 6: 統計 ──
-    has_rs      = sum(1 for r in results if r['rsScore']   is not None)
-    has_rev     = sum(1 for r in results if r['revenue']   is not None)
+    # ── 統計 ──
+    has_rs      = sum(1 for r in results if r['rsScore']    is not None)
+    has_rev     = sum(1 for r in results if r['revenue']    is not None)
     has_foreign = sum(1 for r in results if r['foreignBuy'] is not None)
-    log.info(f'  RS 指標覆蓋: {has_rs}/{len(results)} 支')
-    log.info(f'  月營收覆蓋:  {has_rev}/{len(results)} 支')
-    log.info(f'  法人覆蓋:    {has_foreign}/{len(results)} 支')
+    log.info(f'  RS 覆蓋: {has_rs}/{len(results)}  '
+             f'月營收: {has_rev}/{len(results)}  '
+             f'法人: {has_foreign}/{len(results)}')
 
-    # ── Step 7: 輸出 ──
+    # ── Step 6: 輸出 ──
     log.info(f'Step 6: 輸出 {OUTPUT_PATH}...')
     os.makedirs('data', exist_ok=True)
 
     output = {
-        'version':     'V1.0',
-        'generated':   tw_now.isoformat(),
-        'dataDate':    data_date,
-        'source':      'yfinance+mops+twse',
-        'stockCount':  len(results),
-        'coverage': {
-            'technical': has_rs,
-            'revenue':   has_rev,
-            'institutional': has_foreign,
-        },
-        'stocks': results,
+        'version':    'V1.1',
+        'generated':  tw_now.isoformat(),
+        'dataDate':   data_date,
+        'source':     'yfinance+mops+twse',
+        'stockCount': len(results),
+        'coverage':   {'technical': has_rs,
+                       'revenue':   has_rev,
+                       'institutional': has_foreign},
+        'stocks':     results,
     }
-
     with open(OUTPUT_PATH, 'w', encoding='utf-8') as f:
-        json.dump(output, f, ensure_ascii=False, separators=(',', ':'))
+        json.dump(output, f, ensure_ascii=False, separators=(',',':'))
 
     size_kb = os.path.getsize(OUTPUT_PATH) / 1024
     log.info(f'  ✅ {len(results)} 支 → {OUTPUT_PATH} ({size_kb:.0f} KB)')
