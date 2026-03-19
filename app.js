@@ -8,7 +8,7 @@
  *  - 右上角顯示 screener.json 的實際資料日期
  */
 
-const APP_VERSION = 'V1.3';
+const APP_VERSION = 'V1.4';
 
 const CFG = {
   SCREENER_JSON: './data/screener.json',  // 預計算資料
@@ -294,7 +294,7 @@ const UI = {
     const pc=(r.pct||0)>=0?'pct-positive':'pct-negative';
     const pd=r.pct!=null?`${r.pct>=0?'+':''}${r.pct.toFixed(2)}%`:'--';
     const starred=WL.isWatched(r.code);
-    return`
+    return`<tr>
       <td><span class="stock-code">${r.code}</span></td>
       <td><span class="stock-name">${r.name}</span></td>
       <td class="price-cell ${r.price?pc:''}">${r.price?n2(r.price):'--'}</td>
@@ -318,7 +318,8 @@ const UI = {
           onclick="event.stopPropagation();UI.openWatchModal('${r.code}','${(r.name||'').replace(/'/g,"\\'")}')">
           ${starred?'★':'☆'}
         </span>
-      </td>`;
+      </td>
+    </tr>`;
   },
 
   /* Watchlist modal */
