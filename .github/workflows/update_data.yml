@@ -2,7 +2,8 @@ name: 每日更新台股資料
 
 on:
   schedule:
-    - cron: '30 6 * * 1-5'   # 台灣時間 14:30
+    # 台灣時間 15:30 = UTC 07:30（收盤後 2 小時，確保 TWSE 資料完整）
+    - cron: '30 7 * * 1-5'
   workflow_dispatch:
     inputs:
       stock_limit:
@@ -30,8 +31,6 @@ jobs:
 
       - name: Build screener data
         env:
-          # 支援最多 3 組 FinMind Token，輪流使用（每組 ~550 次）
-          # 3 組合計 ~1650 次，足夠 1072 支個股月營收
           FINMIND_TOKEN:   ${{ secrets.FINMIND_TOKEN }}
           FINMIND_TOKEN_2: ${{ secrets.FINMIND_TOKEN_2 }}
           FINMIND_TOKEN_3: ${{ secrets.FINMIND_TOKEN_3 }}
@@ -46,11 +45,10 @@ jobs:
           n = d['stockCount']
           print(f'stockCount : {n}')
           print(f'dataDate   : {d[\"dataDate\"]}')
-          print(f'source     : {d[\"source\"]}')
           print(f'coverage   : {d.get(\"coverage\",{})}')
           if n == 0: print('ERROR: no stocks!'); sys.exit(1)
           for s in d['stocks'][:3]:
-              print(f'  {s[\"code\"]} {s[\"name\"]:8s} price={s[\"price\"]:7.2f} rs={s[\"rsScore\"]}')
+              print(f'  {s[\"code\"]} rs={s[\"rsScore\"]} f5d={s.get(\"foreignBuy5d\")}')
           "
 
       - name: Commit & push
