@@ -35,16 +35,20 @@ STOCK_LIMIT    = int(os.environ.get('STOCK_LIMIT','0'))
 
 TWSE_DAY_ALL   = 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'
 TWSE_LISTED    = 'https://openapi.twse.com.tw/v1/opendata/t187ap03_L'
-TWSE_T86       = 'https://openapi.twse.com.tw/v1/fund/T86'
+TWSE_T86       = 'https://openapi.twse.com.tw/v1/fund/T86'     # OpenAPI（備援）
+TWSE_T86_MAIN  = 'https://www.twse.com.tw/rwd/zh/fund/T86'     # 主要（盤後正式）
+TWSE_T86_ALT   = 'https://www.twse.com.tw/fund/T86'            # 備援
 TWSE_STOCK_DAY = 'https://www.twse.com.tw/exchangeReport/STOCK_DAY'
 FINMIND_BASE   = 'https://api.finmindtrade.com/api/v4/data'
 OUTPUT_PATH    = 'data/screener.json'
 TW_TZ          = timezone(timedelta(hours=8))
 YFINANCE_CHUNK = 50
 YFINANCE_PERIOD= '7mo'
-FINMIND_SLEEP  = 1.2
+FINMIND_SLEEP  = 0.5   # V1.9: 1.2→0.5s（並發模式下更激進）
 TWSE_SLEEP     = 0.4
 QUOTA_PER_KEY  = 550
+
+TWSE_T86_HIST  = 'https://www.twse.com.tw/fund/T86'  # 歷史 T86（法人5/10日累計）
 
 SESSION = requests.Session()
 SESSION.headers.update({
@@ -103,26 +107,167 @@ def load_twse_day_all():
     log.info(f'  t187ap03_L: {len(names)} 筆')
     return base,names
 
-def load_t86():
-    inst={}
-    raw=safe_get_json(TWSE_T86)
-    if not raw: log.warning('  T86: 無資料'); return inst
-    for s in raw:
-        code=(s.get('Code') or s.get('證券代號') or '').strip()
-        if not code: continue
-        def f(*keys):
-            for k in keys:
-                v=s.get(k)
-                if v is not None and str(v).strip() not in ('','--','-'):
-                    try: return float(str(v).replace(',',''))
-                    except: pass
-            return 0.0
-        fgn=f('Foreign_Investor_Net_Buy_or_Sell','外陸資買賣超股數(不含外資自營商)','外資買賣超')*1000
-        tst=f('Investment_Trust_Net_Buy_or_Sell','投信買賣超股數','投信買賣超')*1000
-        inst[code]={'foreignNet':round(fgn),'trustNet':round(tst),
-                    'foreignBuy':fgn>0,'trustBuy':tst>0}
-    log.info(f'  T86: {len(inst)} 筆')
+def _parse_t86_response(raw) -> dict:
+    """
+    解析 T86 回應，支援兩種格式：
+      格式 A（OpenAPI）: list of dict 直接含 Code, Foreign_Investor_Net_Buy_or_Sell 等
+      格式 B（twse.com.tw）: {stat, fields, data} 其中 data 是 list of list
+    """
+    inst = {}
+    if not raw:
+        return inst
+
+    # 格式 A：list of dict（openapi.twse.com.tw）
+    if isinstance(raw, list):
+        for s in raw:
+            code = (s.get('Code') or s.get('證券代號') or '').strip()
+            if not code:
+                continue
+            def fv(*keys):
+                for k in keys:
+                    v = s.get(k)
+                    if v is not None and str(v).strip() not in ('','--','-'):
+                        try: return float(str(v).replace(',',''))
+                        except: pass
+                return 0.0
+            fgn = fv('Foreign_Investor_Net_Buy_or_Sell','外陸資買賣超股數(不含外資自營商)','外資買賣超') * 1000
+            tst = fv('Investment_Trust_Net_Buy_or_Sell','投信買賣超股數','投信買賣超') * 1000
+            inst[code] = {'foreignNet':round(fgn),'trustNet':round(tst),
+                          'foreignBuy':fgn>0,'trustBuy':tst>0}
+        return inst
+
+    # 格式 B：{stat, fields, data}（www.twse.com.tw）
+    if isinstance(raw, dict):
+        stat = raw.get('stat','')
+        if stat not in ('OK','ok') and raw.get('status') not in ('OK','ok',200,None):
+            return inst
+        fields = raw.get('fields', [])
+        data   = raw.get('data', [])
+
+        # 找欄位索引（欄位名稱每季可能不同）
+        def find_col(*candidates):
+            for c in candidates:
+                if c in fields:
+                    return fields.index(c)
+            return -1
+
+        code_col  = find_col('證券代號','代號','Code')
+        fgn_col   = find_col('外陸資買賣超股數(不含外資自營商)','外資買賣超股數',
+                              'Foreign_Investor_Net_Buy_or_Sell')
+        trust_col = find_col('投信買賣超股數','Investment_Trust_Net_Buy_or_Sell')
+
+        if code_col < 0 and data:
+            # 欄位找不到時，用固定位置（TWSE T86 已知格式）
+            # 典型: [代號, 名稱, ..., 外資淨(col 4), ..., 投信淨(col 7)]
+            code_col  = 0
+            fgn_col   = 4
+            trust_col = 7
+
+        for row in data:
+            try:
+                code = str(row[code_col]).strip()
+                if not is_equity(code):
+                    continue
+                def pv(col):
+                    if col < 0 or col >= len(row): return 0.0
+                    s = str(row[col]).replace(',','').replace('+','').strip()
+                    return float(s) if s and s not in ('--','-','') else 0.0
+                fgn = pv(fgn_col) * 1000
+                tst = pv(trust_col) * 1000
+                inst[code] = {'foreignNet':round(fgn),'trustNet':round(tst),
+                              'foreignBuy':fgn>0,'trustBuy':tst>0}
+            except Exception:
+                pass
     return inst
+
+
+def load_t86() -> dict:
+    """
+    載入今日三大法人，依序嘗試多個 URL。
+    主要 URL: twse.com.tw rwd/zh/fund/T86（盤後正式）
+    備援 URL: openapi.twse.com.tw（盤中即時）
+    """
+    today = date_now().strftime('%Y%m%d')
+
+    # 依優先順序嘗試各 URL
+    attempts = [
+        # (url, params, 說明)
+        (TWSE_T86_MAIN, {'response':'json','date':today,'selectType':'ALLBUT0999'}, '主要 rwd'),
+        (TWSE_T86_ALT,  {'response':'json','date':today,'selectType':'ALLBUT0999'}, '備援 fund'),
+        (TWSE_T86_MAIN, {'response':'json','date':today,'selectType':'ALL'},        '主要 ALL'),
+        (TWSE_T86,      None,                                                       'OpenAPI'),
+    ]
+
+    for url, params, label in attempts:
+        try:
+            raw = safe_get_json(url, params=params, timeout=30)
+            if raw is None:
+                log.debug(f'  T86 {label}: 回應為空')
+                continue
+            inst = _parse_t86_response(raw)
+            if inst:
+                log.info(f'  T86 今日 ({label}): {len(inst)} 筆')
+                return inst
+            log.debug(f'  T86 {label}: 解析 0 筆')
+        except Exception as e:
+            log.debug(f'  T86 {label}: {e}')
+
+    log.warning('  T86: 所有 URL 均無資料（可能非交易日或盤中）')
+    return {}
+
+def load_t86_historical(days: int = 10) -> dict:
+    """
+    TWSE 歷史 T86 — 取最近 N 個交易日，計算 5 日累計法人買賣超。
+    與 load_t86 使用相同 URL 和解析邏輯，確保一致性。
+    """
+    daily: dict = {}   # code → {f:[day1,day2,...], t:[day1,day2,...]}
+    fetched = 0
+    now = date_now()
+
+    for delta in range(20):
+        if fetched >= days:
+            break
+        d = now - timedelta(days=delta)
+        if d.weekday() >= 5:
+            continue
+        ds = d.strftime('%Y%m%d')
+
+        # 嘗試多個 URL（與 load_t86 相同策略）
+        for url, label in [(TWSE_T86_MAIN, 'rwd'), (TWSE_T86_ALT, 'alt')]:
+            try:
+                j = safe_get_json(url,
+                    {'response':'json','date':ds,'selectType':'ALLBUT0999'}, timeout=20)
+                if not j:
+                    continue
+                # 快速驗證是否有資料
+                data = j.get('data') if isinstance(j, dict) else j
+                if not data:
+                    continue
+
+                # 用統一解析器
+                day_inst = _parse_t86_response(j if isinstance(j, dict) else j)
+                if day_inst:
+                    fetched += 1
+                    for code, v in day_inst.items():
+                        if code not in daily:
+                            daily[code] = {'f':[], 't':[]}
+                        daily[code]['f'].append(v['foreignNet'])
+                        daily[code]['t'].append(v['trustNet'])
+                    log.debug(f'  T86 hist {ds} ({label}): {len(day_inst)} 筆')
+                    time.sleep(TWSE_SLEEP)
+                    break   # 成功就不再嘗試備援 URL
+            except Exception as e:
+                log.debug(f'  T86 hist {ds} {label}: {e}')
+
+    log.info(f'  T86歷史: {fetched} 交易日，{len(daily)} 支個股')
+
+    out = {}
+    for code, v in daily.items():
+        fn5 = sum(v['f'][:5])
+        tn5 = sum(v['t'][:5])
+        out[code] = {'foreignNet5d': round(fn5), 'trustNet5d': round(tn5),
+                     'foreignBuy5d': fn5 > 0,    'trustBuy5d': tn5 > 0}
+    return out
 
 def calc_market_summary(inst_today):
     if not inst_today: return {}
@@ -179,7 +324,7 @@ def download_price_history(codes):
     for i in range(0,len(tickers),YFINANCE_CHUNK):
         ct=tickers[i:i+YFINANCE_CHUNK]; cc=codes[i:i+YFINANCE_CHUNK]
         bn=i//YFINANCE_CHUNK+1
-        try: raw=yf.download(ct,period=YFINANCE_PERIOD,auto_adjust=True,progress=False)
+        try: raw=yf.download(ct,period=YFINANCE_PERIOD,auto_adjust=True,progress=False,threads=False,raise_on_error=False)
         except Exception as e: log.warning(f'  批次{bn}失敗:{e}'); continue
         if raw is None or (PANDAS_OK and isinstance(raw,pd.DataFrame) and raw.empty): continue
         ok=0
@@ -196,16 +341,27 @@ def download_price_history(codes):
     log.info(f'  yfinance 總計：{len(result)}/{len(codes)} 支')
     return result
 
+def _flatten_df(df):
+    """
+    V1.9 Fix: 新版 yfinance 單支下載也可能有 MultiIndex columns (Price×Ticker)。
+    用 droplevel(1, axis=1) 攤平，確保後續 row['Close'] 永遠是 scalar。
+    """
+    if not PANDAS_OK: return df
+    try:
+        if isinstance(df.columns, pd.MultiIndex):
+            # droplevel ticker level → plain ['Close','High','Low',...]
+            df = df.droplevel(1, axis=1)
+    except Exception:
+        pass
+    return df
+
 def download_single(ticker_tw):
-    """Fix 1b: handle MultiIndex for single-ticker too."""
+    """Fix 1b: flatten MultiIndex before iterrows to prevent Series ambiguous error."""
     if not YF_OK: return []
     try:
-        raw=yf.download(ticker_tw,period=YFINANCE_PERIOD,auto_adjust=True,progress=False)
+        raw=yf.download(ticker_tw,period=YFINANCE_PERIOD,auto_adjust=True,progress=False,threads=False,raise_on_error=False)
         if raw is None or (PANDAS_OK and isinstance(raw,pd.DataFrame) and raw.empty): return []
-        if PANDAS_OK and isinstance(raw.columns,pd.MultiIndex):
-            df=_extract_df(raw,ticker_tw)
-            if df is None or df.empty: return []
-        else: df=raw
+        df = _flatten_df(raw)   # ← flatten so row['Close'] is always scalar
         rows=[r for r in (_row_to_ohlc(row,di.strftime('%Y-%m-%d')) for di,row in df.iterrows()) if r]
         rows.sort(key=lambda x:x['date'],reverse=True)
         return rows
@@ -267,37 +423,71 @@ class KeyWorker:
         except Exception as e: log.debug(f'  Key{self.index} {code}:{e}'); return []
 
 def load_revenue_finmind(codes):
-    if not FINMIND_TOKENS: log.info('  無Token，月營收N/A'); return {}
-    start=date_ago_s(24)
-    workers=[KeyWorker(t,i+1) for i,t in enumerate(FINMIND_TOKENS)]
-    nk=len(workers)
-    log.info(f'  FinMind月營收:{len(codes)}支，{nk}個並發Key')
-    log.info(f'  預估:{len(codes)/nk*FINMIND_SLEEP/60:.1f}分鐘')
+    """
+    FinMind 月營收 — 多 Key 並發 + 額度溢出轉移。
+
+    策略：
+      - N 個 Key 各自負責 codes 的 1/N，同時並發
+      - 若某 Key 額度耗盡，其剩餘 code 自動轉移給下一個有額度的 Key
+      - 所有 Key 都耗盡後，剩餘股票月營收顯示 N/A
+    """
+    if not FINMIND_TOKENS:
+        log.info('  無Token，月營收N/A'); return {}
+
+    start   = date_ago_s(24)
+    workers = [KeyWorker(t,i+1) for i,t in enumerate(FINMIND_TOKENS)]
+    nk      = len(workers)
+
+    # 共用 overflow queue：Key 耗盡時把剩餘 code 推入，由有額度的 Key 接手
+    from queue import Queue
+    overflow_q: Queue = Queue()
+    overflow_lock = threading.Lock()
+
+    log.info(f'  FinMind月營收:{len(codes)}支，{nk}個並發Key，額度溢出自動轉移')
+    log.info(f'  每Key上限:{QUOTA_PER_KEY}次，合計:{nk*QUOTA_PER_KEY}次')
+
     result={}; rl=threading.Lock()
     cnt={'n':0}; cl=threading.Lock()
-    def fetch_one(code,wk):
-        if not wk.has_quota: return
-        data=wk.fetch('TaiwanStockMonthRevenue',code,start)
+
+    def fetch_with_fallback(code: str, preferred_worker: 'KeyWorker') -> None:
+        """嘗試用 preferred_worker，若已耗盡則找下一個有額度的 Key"""
+        worker = preferred_worker
+        if not worker.has_quota:
+            # 找還有額度的 Key
+            worker = next((w for w in workers if w.has_quota), None)
+            if worker is None:
+                return   # 全部 Key 耗盡
+            log.debug(f'  {code} 溢出→ Key{worker.index}')
+
+        data = worker.fetch('TaiwanStockMonthRevenue', code, start)
         if data:
-            s=sorted(data,key=lambda x:x['date'],reverse=True)
-            with rl: result[code]=[{'date':d['date'],'revenue':float(d['revenue'])} for d in s]
-        with cl: cnt['n']+=1; n=cnt['n']
-        if n%50==0:  # Fix 2: every 50
-            sm=', '.join(f'Key{w.index}:{w.count}次' for w in workers)
+            s = sorted(data, key=lambda x:x['date'], reverse=True)
+            with rl:
+                result[code] = [{'date':d['date'],'revenue':float(d['revenue'])} for d in s]
+
+        with cl:
+            cnt['n'] += 1; n = cnt['n']
+        if n % 50 == 0:
+            sm = ', '.join(f'Key{w.index}:{w.count}次{"(✓)" if w.has_quota else "(滿)"}' for w in workers)
             log.info(f'  月營收進度:{n}/{len(codes)}，{sm}')
-    per=[[] for _ in range(nk)]
-    for i,c in enumerate(codes): per[i%nk].append(c)
-    def run(wk,batch):
-        log.info(f'  Key{wk.index}啟動，負責{len(batch)}支')
+
+    # 按 round-robin 分配給各 Worker
+    per = [[] for _ in range(nk)]
+    for i, c in enumerate(codes):
+        per[i % nk].append(c)
+
+    def run(wk: 'KeyWorker', batch: list) -> None:
+        log.info(f'  Key{wk.index} 啟動，負責 {len(batch)} 支')
         for c in batch:
-            if not wk.has_quota: break
-            fetch_one(c,wk)
+            fetch_with_fallback(c, wk)
+
     with ThreadPoolExecutor(max_workers=nk) as pool:
-        futs=[pool.submit(run,wk,b) for wk,b in zip(workers,per)]
+        futs = [pool.submit(run, wk, b) for wk, b in zip(workers, per)]
         for f in as_completed(futs):
             try: f.result()
             except Exception as e: log.warning(f'  Worker異常:{e}')
-    sm=', '.join(f'Key{w.index}:{w.count}次' for w in workers)
+
+    sm = ', '.join(f'Key{w.index}:{w.count}次' for w in workers)
     log.info(f'  月營收完成:{len(result)}/{len(codes)}支 | {sm}')
     return result
 
@@ -358,7 +548,7 @@ def calc_revenue(rv):
             'revenueHighRecord':lv>=max(allv) or (float(sly['revenue'])<lv if sly else False)}
 
 def main():
-    log.info('=== 台股雷達資料建置 V1.9 開始 ===')
+    log.info('=== 台股雷達資料建置 V2.0 開始 ===')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"}')
     log.info(f'FinMind Keys:{len(FINMIND_TOKENS)}組 配額:{len(FINMIND_TOKENS)*QUOTA_PER_KEY}次')
     data_date=date_now().strftime('%Y-%m-%d')
@@ -376,6 +566,9 @@ def main():
     if mkt:
         log.info(f'  大盤外資:{mkt["foreignNetYi"]:+.2f}億 ({mkt["foreignBuyCnt"]}買/{mkt["foreignSellCnt"]}賣)')
         log.info(f'  大盤投信:{mkt["trustNetYi"]:+.2f}億 ({mkt["trustBuyCnt"]}買/{mkt["trustSellCnt"]}賣)')
+
+    log.info('Step 2b: T86 歷史（5日累計法人）...')
+    inst5d = load_t86_historical(10)
 
     log.info('Step 3: yfinance K線...')
     ph=download_price_history(all_codes) if YF_OK else {}
@@ -402,11 +595,16 @@ def main():
         if i>0 and i%200==0: log.info(f'  進度:{i}/{len(all_codes)}...')
         base=sb.get(code) or nm.get(code) or {'code':code,'name':code}
         it=inst.get(code,{})
+        it5=inst5d.get(code,{})
         r={'code':base['code'],'name':base['name'],
            'price':base.get('price',0),'change':base.get('change',0),'pct':base.get('pct',0),
            'high':base.get('high',0),'low':base.get('low',0),'vol':base.get('vol',0),
+           # 今日法人（T86 當日）
            'foreignNet':it.get('foreignNet'),'trustNet':it.get('trustNet'),
            'foreignBuy':it.get('foreignBuy'),'trustBuy':it.get('trustBuy'),
+           # 5日累計法人（T86 歷史）
+           'foreignNet5d':it5.get('foreignNet5d'),'trustNet5d':it5.get('trustNet5d'),
+           'foreignBuy5d':it5.get('foreignBuy5d'),'trustBuy5d':it5.get('trustBuy5d'),
            'rsScore':None,'distanceFromHigh':None,'shortMAAlign':None,'longMAAlign':None,'aboveSubPoint':None,
            'revenue':None,'revenueDate':None,'yoyLatest':None,'momLatest':None,
            'yoy2mo':None,'mom2mo':None,'revenueHighRecord':None,
@@ -434,7 +632,7 @@ def main():
     log.info('Step 6: 輸出...')
     os.makedirs('data',exist_ok=True)
     tw_now=date_now()
-    out={'version':'V1.9','generated':tw_now.isoformat(),'dataDate':data_date,
+    out={'version':'V2.0','generated':tw_now.isoformat(),'dataDate':data_date,
          'source':'yfinance+finmind+twse' if FINMIND_TOKENS else 'yfinance+twse',
          'stockCount':len(results),'coverage':{'technical':hrs,'revenue':hrv,'institutional':hfi},
          'marketSummary':mkt,'stocks':results}
