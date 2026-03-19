@@ -1,5 +1,5 @@
 /**
- * 台股雷達 Stock Radar — app.js  V0.6
+ * 台股雷達 Stock Radar — app.js  V1.0
  *
  * 架構變更：
  *  - 讀取 data/screener.json（每日 GitHub Actions 預先計算）
@@ -8,7 +8,7 @@
  *  - 右上角顯示 screener.json 的實際資料日期
  */
 
-const APP_VERSION = 'V0.6';
+const APP_VERSION = 'V1.0';
 
 const CFG = {
   SCREENER_JSON: './data/screener.json',  // 預計算資料

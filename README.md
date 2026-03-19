@@ -1,68 +1,131 @@
-# 台股雷達 Stock Radar — V0.1
+# 台股雷達 Stock Radar — V1.0
 
-台股多因子篩選 PWA，整合技術面、基本面、籌碼面指標。
+台股多因子篩選 PWA，完全免費，部署在 GitHub Pages。
+
+**資料來源（方案 E，完全免費）：**
+| 用途 | 來源 |
+|---|---|
+| K 線歷史（技術指標） | Yahoo Finance（`yfinance`） |
+| 月營收 | MOPS 公開資訊觀測站 |
+| 今日三大法人 | TWSE Open API (T86) |
+| 今日收盤行情 | TWSE Open API (DAY_ALL) |
 
 ---
 
-## 🚀 快速部署到 GitHub Pages
+## 🚀 完整設定教學
 
-### 步驟 1：建立 Repository
-1. 登入 GitHub，點右上角 **`+`** → **New repository**
-2. Repository name 填寫（例如）：`taiwan-stock-radar`
-3. 設為 **Public**
-4. **不要**勾選 Add README（我們會上傳自己的）
-5. 點 **Create repository**
+### 前置：建立 GitHub Repo
 
-### 步驟 2：上傳檔案
-**方法 A：拖曳上傳（最簡單）**
-1. 進入剛建立的 repo
-2. 點 `uploading an existing file`
-3. 將解壓縮後的所有檔案拖曳進去（包含 icons/ 資料夾）
-4. 點 **Commit changes**
+1. 登入 [github.com](https://github.com)
+2. 右上角 **`+`** → **New repository**
+3. Repository name：填 `taiwan-stock-radar`
+4. 設為 **Public**（免費版 Pages 需要）
+5. **不要**勾選「Add a README」
+6. 點 **Create repository**
 
-**方法 B：Git 指令**
+---
+
+### 步驟一：上傳所有檔案
+
+**方法 A：網頁上傳（最簡單）**
+
+1. 進入 repo 頁面，點 **「uploading an existing file」**
+2. 解壓縮 `taiwan-stock-radar-v1.0.zip`
+3. 將所有檔案拖曳上傳
+
+   > ⚠️ **重要**：`.github` 資料夾（點開頭）在 Mac/Windows 預設隱藏。
+   > - **Mac**：Finder 按 `Command+Shift+.` 顯示隱藏檔案
+   > - **Windows**：資料夾選項 → 勾選「顯示隱藏的項目」
+   >
+   > 請確認上傳了 `.github/workflows/update_data.yml`，
+   > 否則 GitHub Actions 不會出現。
+
+4. Commit message 填 `Initial commit V1.0` → **Commit changes**
+
+**方法 B：Git 指令（進階）**
 ```bash
+cd taiwan-stock-radar
 git init
-git add .
-git commit -m "Initial commit: Stock Radar V0.1"
+git add -A          # -A 包含隱藏資料夾
+git commit -m "Initial commit V1.0"
 git branch -M main
 git remote add origin https://github.com/你的帳號/taiwan-stock-radar.git
 git push -u origin main
 ```
 
-### 步驟 3：啟用 GitHub Pages
-1. 進入 repo → **Settings** → **Pages**（左側選單）
-2. Source 選 **Deploy from a branch**
-3. Branch 選 **main**，資料夾選 **/ (root)**
-4. 點 **Save**
-5. 約 1~2 分鐘後，網址會顯示在頁面頂端
+---
 
-🌐 您的 PWA 網址：`https://你的帳號.github.io/taiwan-stock-radar/`
+### 步驟二：啟用 GitHub Pages
+
+1. Repo → **Settings** → 左側 **Pages**
+2. Source → **Deploy from a branch**
+3. Branch → **`main`**，資料夾 → **`/ (root)`**
+4. **Save**
+5. 約 1~2 分鐘後出現你的網址：
+   `https://你的帳號.github.io/taiwan-stock-radar/`
 
 ---
 
-## 🔑 申請 FinMind API Token（必要）
+### 步驟三：手動執行第一次建置
 
-大部分股票資料需要 FinMind API Token（免費）。
+1. Repo → **Actions** 分頁
+2. 左側選「**每日更新台股資料**」
+3. 右側 **Run workflow** → **Run workflow**
+4. 等待約 **10~20 分鐘**
+5. 出現綠色 ✅ 代表成功
 
-### 申請步驟：
-1. 前往 https://finmindtrade.com
-2. 點右上角 **「登入/註冊」** → **「立即加入」**
-3. 填寫 Email、密碼完成註冊
-4. 至收件匣點選驗證信
-5. 登入後，點右上角頭像 → **「個人資料」**
-6. 找到 **API Token** 欄位，複製 Token
-7. 開啟台股雷達 App，前往 **設定** 頁，貼上 Token 並點 **驗證並儲存**
+建置完成後：
+- `data/screener.json` 自動更新
+- ~1 分鐘後 PWA 取得最新資料
+- 日後每個交易日 **14:30** 自動執行
 
-### 免費版限制：
-| 項目 | 限制 |
-|------|------|
-| 每日 API 請求次數 | 約 300~600 次 |
-| 資料更新頻率 | 收盤後更新 |
-| 歷史資料深度 | 完整歷史 |
+---
 
-> 一次查詢約消耗 **3~5 次 API 請求/每檔股票**。
-> 一次查詢 20 檔 ≈ 消耗 60~100 次請求。
+## 📊 篩選指標說明
+
+### 技術面（yfinance K 線）
+| 指標 | 計算方式 |
+|---|---|
+| RS > 90 | 個股 vs 0050（大盤代理）26 週相對強度，99分制 |
+| 距月高 ≤ 5% | 現價距近 22 日最高點 |
+| 短均排列 | MA5 > MA10 > MA20 |
+| 中長均排列 | MA20 > MA60 > MA120 |
+| 站上扣抵值 | 現價 > 20日前 且 > 60日前股價 |
+
+### 基本面（MOPS 月營收）
+| 指標 | 說明 |
+|---|---|
+| 營收創高 | 歷史最高 或 > 去年同月 |
+| 年增率連2月 > 20% | 近兩月 YoY ≥ 20% |
+| 月增率連2月 > 20% | 近兩月 MoM ≥ 20% |
+| 毛利/營益率成長 | 需啟用 ENABLE_FINANCIALS（選用） |
+| 無虧損 | 需啟用 ENABLE_FINANCIALS（選用） |
+
+### 籌碼面（TWSE T86 今日）
+| 指標 | 說明 |
+|---|---|
+| 外資買超 | 今日外資淨買超 > 0 |
+| 投信買超 | 今日投信淨買超 > 0 |
+| 其餘籌碼指標 | 無免費來源，顯示 N/A |
+
+---
+
+## 🔧 進階選項
+
+### 啟用財報（毛利率/營益率）
+手動 Run workflow 時：「啟用 MOPS 財報」選 **true**
+（約多 20~40 分鐘，逐支公司爬取）
+
+### 本機測試
+```bash
+pip install requests yfinance beautifulsoup4 lxml
+
+# 只跑 50 支（快速測試）
+STOCK_LIMIT=50 python3 scripts/build_data.py
+
+# 完整執行
+python3 scripts/build_data.py
+```
 
 ---
 
@@ -70,63 +133,29 @@ git push -u origin main
 
 ```
 taiwan-stock-radar/
-├── index.html          # 主頁面 (PWA 入口)
-├── style.css           # 樣式（含深色/淺色主題）
-├── app.js              # 主程式邏輯
-├── manifest.json       # PWA 設定
-├── sw.js               # Service Worker（離線快取）
-├── icons/
-│   ├── icon-192.svg    # App 圖示 192px
-│   └── icon-512.svg    # App 圖示 512px
-└── README.md           # 本說明文件
+├── .github/workflows/update_data.yml  ← Actions 排程（關鍵）
+├── data/screener.json                 ← 預計算資料
+├── scripts/build_data.py              ← Python 建置腳本
+├── index.html  app.js  style.css
+├── sw.js  manifest.json
+└── icon-192.svg  icon-512.svg
 ```
 
 ---
 
-## 📊 功能說明
+## ❓ 常見問題
 
-### 篩選條件
+**Q：Actions 沒出現「每日更新台股資料」？**
+A：表示 `.github/workflows/update_data.yml` 沒有上傳成功。請確認隱藏資料夾已顯示並重新上傳。
 
-#### 技術面
-| 指標 | 計算方式 |
-|------|---------|
-| RS 指標 > 90 | 個股 26 週漲幅 vs TAIEX 相對強弱，轉換為 0~100 分 |
-| 距月高點 ≤ 5% | 現價 ÷ 近 22 交易日最高價 |
-| 短期均線排列 | MA5 > MA10 > MA20 |
-| 中長期均線排列 | MA20 > MA60 > MA120 (> MA240) |
-| 站上扣抵值 | 現價 > 20日前股價 且 現價 > 60日前股價 |
+**Q：非交易日執行怎樣？**
+A：TWSE 無行情，但 yfinance 仍提供歷史 K 線，技術指標正常計算。
 
-#### 基本面
-| 指標 | 資料來源 |
-|------|---------|
-| 營收創歷史/同期高 | FinMind TaiwanStockMonthRevenue |
-| 年增率連2月 > 20% | FinMind 月營收計算 |
-| 月增率連2月 > 20% | FinMind 月營收計算 |
-| 毛利率/營益率較去年成長 | FinMind TaiwanStockFinancialStatements |
-| 公司無虧損 | FinMind 財報淨利 > 0 |
-
-#### 籌碼面
-| 指標 | 資料來源 |
-|------|---------|
-| 籌碼集中度增加 | FinMind TaiwanStockShareholderStructure |
-| 外資買超（近5日） | FinMind TaiwanStockInstitutionalInvestors |
-| 投信買超（近5日） | FinMind TaiwanStockInstitutionalInvestors |
-| 大戶持股比例增加 | FinMind TaiwanStockShareholderStructure |
-| 法人持股創一季新高 | FinMind 法人資料計算 |
-
-> ⚠️ **V0.1 限制**：「近期買賣家數差為負」需 TWSE 分點資料，此版本暫不支援。
-
----
-
-## 🔄 版本記錄
-
-| 版本 | 更新內容 |
-|------|---------|
-| V0.1 | 初始版本。實作 16 項篩選指標、自選股管理、深色/淺色主題切換 |
+**Q：Action 逾時失敗？**
+A：直接重跑即可（Run workflow 再觸發一次）。
 
 ---
 
 ## ⚠️ 免責聲明
 
-本工具提供之資料及分析結果**僅供參考**，不構成任何投資建議。
-股票市場存在風險，投資決策請依個人判斷並自負盈虧。
+本工具僅供參考，不構成投資建議。股市有風險，投資決策請自行判斷。
