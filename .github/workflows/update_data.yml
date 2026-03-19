@@ -1,1 +1,51 @@
+name: 每日更新台股資料
 
+on:
+  # 台灣時間 14:15 = UTC 06:15（收盤後約 45 分鐘）
+  schedule:
+    - cron: '15 6 * * 1-5'   # 週一到週五
+
+  # 也可手動觸發（測試用）
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '強制重新建置（忽略快取）'
+        required: false
+        default: 'false'
+
+jobs:
+  build-data:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # 允許 commit & push
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Build screener data
+        env:
+          FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+        run: |
+          echo "開始建置資料..."
+          python3 scripts/build_data.py
+          echo "建置完成"
+          ls -lh data/
+
+      - name: Commit & push data
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/screener.json data/screener_empty.json
+          # 若無變更則不 commit
+          git diff --staged --quiet && echo "資料無變更，略過 commit" || \
+            git commit -m "chore: 更新台股資料 $(date -u +%Y-%m-%d\ %H:%M\ UTC)"
+          git push
