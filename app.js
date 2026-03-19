@@ -8,7 +8,7 @@
  *  - 右上角顯示 screener.json 的實際資料日期
  */
 
-const APP_VERSION = 'V1.2';
+const APP_VERSION = 'V1.3';
 
 const CFG = {
   SCREENER_JSON: './data/screener.json',  // 預計算資料
@@ -212,6 +212,8 @@ const UI = {
   /* Results table */
   renderResults(stocks){
     const container=document.getElementById('resultsContainer'); if(!container)return;
+    // Ensure min-height:0 so nested flex scroll works (flex min-height cascade fix)
+    container.style.cssText='flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column';
     const af=getAF();
     const count=stocks.length;
 

@@ -248,6 +248,7 @@ body {
   flex: 1;
   overflow: hidden;
   position: relative;
+  min-height: 0;   /* ← required: allow flex child to shrink below content size */
 }
 
 .page {
@@ -255,6 +256,7 @@ body {
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+  min-height: 0;   /* ← required for nested flex scroll to work */
 }
 .page.active { display: flex; }
 
