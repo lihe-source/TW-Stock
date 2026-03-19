@@ -563,7 +563,7 @@ def calc_revenue(rev_list: List[dict]) -> dict:
 #  主流程
 # ─────────────────────────────────────────────
 def main():
-    log.info('=== 台股雷達資料建置 V1.3 開始 ===')
+    log.info('=== 台股雷達資料建置 V1.5 開始 ===')
     log.info(f'yfinance: {"✓" if YF_OK else "✗"}  pandas: {"✓" if PANDAS_OK else "✗"}')
     log.info(f'FinMind Keys: {len(FINMIND_TOKENS)} 組 '
              f'({", ".join(f"Key{i+1}" for i in range(len(FINMIND_TOKENS)))})')
@@ -608,6 +608,20 @@ def main():
 
     log.info('Step 5: 計算個股指標...')
     results = []
+
+    # 用 TWSE DAY_ALL 的 0050 資料補全 proxy 最新一筆
+    # 讓 RS 用今日收盤計算，而非 yfinance 昨日收盤
+    proxy_0050_today = stocks_base.get('0050')
+    if proxy_0050_today and proxy and proxy[0]['date'] < data_date:
+        today_proxy = {
+            'date':  data_date,
+            'close': proxy_0050_today['price'],
+            'max':   proxy_0050_today['high'],
+            'min':   proxy_0050_today['low'],
+        }
+        proxy = [today_proxy] + proxy
+        log.info(f'  0050 今日收盤已補入 proxy（{data_date} {proxy_0050_today["price"]}）')
+
     for i, code in enumerate(all_codes):
         if i>0 and i%200==0:
             log.info(f'  進度: {i}/{len(all_codes)}...')
@@ -636,10 +650,27 @@ def main():
         px = price_history.get(code)
         if not px and not YF_OK:
             px = twse_stock_history(code, 7)
+
         if px:
+            # ── 核心修正：用 TWSE 今日收盤取代 yfinance 歷史最新一筆 ──
+            # yfinance 歷史資料通常比 TWSE 晚一日更新，
+            # 若 TWSE 有今日收盤且 yfinance 最新是昨日，補入今日
+            twse_price = base.get('price', 0)
+            twse_high  = base.get('high',  0)
+            twse_low   = base.get('low',   0)
+            if twse_price > 0 and px[0]['date'] < data_date:
+                today_row = {
+                    'date':  data_date,
+                    'close': twse_price,
+                    'max':   twse_high or twse_price,
+                    'min':   twse_low  or twse_price,
+                }
+                px = [today_row] + px   # 補入今日，讓技術指標以今日收盤計算
+
             r.update(calc_technical(px, proxy))
-            if not r['price'] or r['price']==0:
-                try: r['price']=float(px[0]['close'])
+            # 確保顯示的股價來自 TWSE（已在 r['price'] 設定）
+            if not r['price'] or r['price'] == 0:
+                try: r['price'] = float(px[0]['close'])
                 except Exception: pass
 
         rev_list = revenue_all.get(code, [])
@@ -656,7 +687,7 @@ def main():
     log.info(f'Step 6: 輸出 {OUTPUT_PATH}...')
     os.makedirs('data', exist_ok=True)
     output = {
-        'version':    'V1.3',
+        'version':    'V1.5',
         'generated':  tw_now.isoformat(),
         'dataDate':   data_date,
         'source':     ('yfinance+finmind+twse'
