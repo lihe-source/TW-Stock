@@ -24,6 +24,8 @@ import os
 import re
 import time
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List, Tuple, Any
 
@@ -458,32 +460,143 @@ def twse_stock_history(code: str, months: int = 7) -> List[dict]:
     return rows
 
 # ─────────────────────────────────────────────
-#  FinMind 月營收（多 key 輪換）
+#  FinMind 月營收（並發多 Key）
+#  每個 Key 分配獨立 Worker Thread，同時跑
+#  速度提升：N Keys → ~N 倍快
 # ─────────────────────────────────────────────
+
+class KeyWorker:
+    """
+    每個 FinMind Key 的獨立 Worker。
+    - 有自己的速率控制（FINMIND_SLEEP 秒/次）
+    - 有自己的配額計數器
+    - 獨立的 requests.Session（避免跨執行緒共用）
+    """
+    def __init__(self, token: str, index: int, limit: int = QUOTA_PER_KEY):
+        self.token   = token
+        self.index   = index   # 1-based display
+        self.limit   = limit
+        self.count   = 0
+        self.exceeded= False
+        self._lock   = threading.Lock()
+        self._last   = 0.0     # timestamp of last request
+        # Each worker has its own session (thread-safe)
+        self._session = requests.Session()
+        self._session.headers.update(SESSION.headers)
+
+    @property
+    def has_quota(self) -> bool:
+        return not self.exceeded and self.count < self.limit
+
+    def fetch(self, dataset: str, code: str, start_date: str) -> List[dict]:
+        """Fetch one stock from FinMind, with per-key rate limiting."""
+        with self._lock:
+            if self.exceeded:
+                return []
+            # Rate limit: ensure at least FINMIND_SLEEP between calls from this key
+            elapsed = time.monotonic() - self._last
+            wait = FINMIND_SLEEP - elapsed
+            if wait > 0:
+                time.sleep(wait)
+
+        params = {'dataset': dataset, 'data_id': code,
+                  'start_date': start_date, 'token': self.token}
+        try:
+            r = self._session.get(FINMIND_BASE, params=params, timeout=25)
+            with self._lock:
+                self._last = time.monotonic()
+
+            if r.status_code == 402:
+                with self._lock:
+                    if not self.exceeded:
+                        self.exceeded = True
+                        log.warning(f'  Key {self.index} 402 配額耗盡（{self.count} 次）')
+                return []
+            if r.status_code == 422:
+                return []
+            r.raise_for_status()
+
+            content = r.content.strip()
+            if not content or content[:1] in (b'<', b'\n'):
+                return []
+
+            j = r.json()
+            if j.get('status') != 200:
+                msg = j.get('msg', '')
+                if any(k in msg for k in ('quota','次數','超過','limit')):
+                    with self._lock:
+                        self.exceeded = True
+                        log.warning(f'  Key {self.index} 配額耗盡（msg）')
+                return []
+
+            with self._lock:
+                self.count += 1
+                if self.count >= self.limit:
+                    self.exceeded = True
+                    log.info(f'  Key {self.index} 達配額上限 {self.limit} 次')
+            return j.get('data', [])
+
+        except Exception as e:
+            log.debug(f'  Key {self.index} {code}: {e}')
+            return []
+
+
 def load_revenue_finmind(codes: List[str]) -> Dict[str, List[dict]]:
     if not FINMIND_TOKENS:
         log.info('  無 FINMIND_TOKEN，月營收顯示 N/A')
         return {}
 
+    start   = date_ago_str(24)
+    workers = [KeyWorker(t, i+1) for i, t in enumerate(FINMIND_TOKENS)]
+    n_keys  = len(workers)
+    log.info(f'  FinMind 月營收: {len(codes)} 支，{n_keys} 個並發 Key')
+    log.info(f'  預估時間: {len(codes)/n_keys*FINMIND_SLEEP/60:.1f} 分鐘（原本 {len(codes)*FINMIND_SLEEP/60:.1f} 分鐘）')
+
     result: Dict[str, List[dict]] = {}
-    start  = date_ago_str(24)
-    log.info(f'  FinMind 月營收: {len(codes)} 支，使用 {len(FINMIND_TOKENS)} 組 Key')
+    result_lock = threading.Lock()
+    counter     = {'done': 0}
+    counter_lock= threading.Lock()
 
-    for i, code in enumerate(codes):
-        if not GUARD.has_quota:
-            log.info(f'  所有 Key 配額耗盡，已取 {i} 支，其餘月營收顯示 N/A')
-            break
-
-        data = finmind_call('TaiwanStockMonthRevenue', code, start)
+    def fetch_one(code: str, worker: KeyWorker) -> None:
+        if not worker.has_quota:
+            return
+        data = worker.fetch('TaiwanStockMonthRevenue', code, start)
         if data:
             s = sorted(data, key=lambda x: x['date'], reverse=True)
-            result[code] = [{'date': d['date'], 'revenue': float(d['revenue'])}
-                            for d in s]
+            rev_list = [{'date': d['date'], 'revenue': float(d['revenue'])} for d in s]
+            with result_lock:
+                result[code] = rev_list
+        with counter_lock:
+            counter['done'] += 1
+            n = counter['done']
+        if n % 100 == 0:
+            summary = ', '.join(f'Key{w.index}:{w.count}次' for w in workers)
+            log.info(f'  月營收進度: {n}/{len(codes)}，{summary}')
 
-        if i > 0 and i % 100 == 0:
-            log.info(f'  月營收進度: {i}/{len(codes)}，{GUARD.summary()}')
+    # Distribute codes round-robin across workers
+    # Each worker gets its own subset → true parallel execution
+    per_worker = [[] for _ in range(n_keys)]
+    for i, code in enumerate(codes):
+        per_worker[i % n_keys].append(code)
 
-    log.info(f'  月營收完成: {len(result)}/{len(codes)} 支 | {GUARD.summary()}')
+    # Run each worker's batch in a thread
+    def worker_run(wk: KeyWorker, batch: List[str]) -> None:
+        for c in batch:
+            if not wk.has_quota:
+                break
+            fetch_one(c, wk)
+
+    with ThreadPoolExecutor(max_workers=n_keys) as pool:
+        futs = [pool.submit(worker_run, wk, batch)
+                for wk, batch in zip(workers, per_worker)]
+        for f in as_completed(futs):
+            try:
+                f.result()
+            except Exception as e:
+                log.warning(f'  Worker 異常: {e}')
+
+    summary = ', '.join(f'Key{w.index}:{w.count}次' for w in workers)
+    log.info(f'  月營收完成: {len(result)}/{len(codes)} 支 | {summary}')
     return result
 
 # ─────────────────────────────────────────────
