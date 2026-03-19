@@ -516,8 +516,10 @@ def calc_technical(prices: List[dict], proxy: List[dict]) -> dict:
                    if all(x is not None for x in [ma5,ma10,ma20]) else None)
     long_align  = (bool(ma20>ma60>ma120)
                    if all(x is not None for x in [ma20,ma60,ma120]) else None)
-    above_sub   = (bool(cur>float(prices[19]['close']) and cur>float(prices[59]['close']))
-                   if len(prices)>=61 else None)
+    # 站上扣抵值（MA5版）：現價 > 5交易日前股價
+    # 意義：今日收盤若高於5日前，MA5 將上升（站上MA5扣抵值）
+    above_sub   = (bool(cur > float(prices[5]['close']))
+                   if len(prices) >= 6 else None)
     dist_high = None
     lk = min(22,len(prices))
     if lk:
@@ -563,15 +565,15 @@ def calc_revenue(rev_list: List[dict]) -> dict:
 #  主流程
 # ─────────────────────────────────────────────
 def main():
-    log.info('=== 台股雷達資料建置 V1.5 開始 ===')
+    log.info('=== 台股雷達資料建置 V1.7 開始 ===')
     log.info(f'yfinance: {"✓" if YF_OK else "✗"}  pandas: {"✓" if PANDAS_OK else "✗"}')
     log.info(f'FinMind Keys: {len(FINMIND_TOKENS)} 組 '
              f'({", ".join(f"Key{i+1}" for i in range(len(FINMIND_TOKENS)))})')
     log.info(f'配額預估: {len(FINMIND_TOKENS)} × {QUOTA_PER_KEY} = '
              f'{len(FINMIND_TOKENS)*QUOTA_PER_KEY} 次')
 
-    tw_now    = date_now()
-    data_date = tw_now.strftime('%Y-%m-%d')
+    # data_date = 今日日期；generated 時間在最後寫檔前才取，才是真正完成時間
+    data_date = date_now().strftime('%Y-%m-%d')
 
     log.info('Step 1: TWSE 個股清單...')
     stocks_base, names_only = load_twse_day_all()
@@ -686,8 +688,10 @@ def main():
 
     log.info(f'Step 6: 輸出 {OUTPUT_PATH}...')
     os.makedirs('data', exist_ok=True)
+    # tw_now 在此取得，反映真正寫入時間（而非腳本啟動時間）
+    tw_now = date_now()
     output = {
-        'version':    'V1.5',
+        'version':    'V1.7',
         'generated':  tw_now.isoformat(),
         'dataDate':   data_date,
         'source':     ('yfinance+finmind+twse'
