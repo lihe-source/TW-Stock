@@ -208,98 +208,84 @@
     <div class="page" id="page-settings">
       <div class="page-scroll">
 
-        <!-- FinMind API -->
+        <!-- Data Status -->
         <div class="settings-section">
-          <div class="settings-section-title">🔑 FinMind API 設定</div>
+          <div class="settings-section-title">📦 資料狀態</div>
           <div class="settings-row">
-            <div class="settings-label">API Token <span id="tokenStatus" class="token-status token-missing">未設定</span></div>
-            <div class="settings-desc">FinMind 提供台股免費歷史資料 API，每日約 300~600 次免費請求。<br>
-              請至 <a href="https://finmindtrade.com" target="_blank" style="color:var(--accent)">finmindtrade.com</a> 免費註冊後取得 Token。</div>
-            <div class="settings-input-row" style="margin-top:8px">
-              <input type="text" id="finmindToken" placeholder="貼上您的 FinMind Token">
-              <button class="btn-secondary" id="saveTokenBtn">驗證並儲存</button>
-            </div>
-          </div>
-          <div class="settings-row">
-            <div class="settings-label">📋 申請步驟</div>
-            <div class="settings-desc" style="line-height:1.9">
-              1. 前往 <a href="https://finmindtrade.com" target="_blank" style="color:var(--accent)">finmindtrade.com</a><br>
-              2. 點右上角「登入/註冊」→「立即加入」<br>
-              3. Email 驗證後，點右上角頭像 →「個人資料」<br>
-              4. 找到「API Token」欄位並複製<br>
-              5. 貼上至上方欄位並點「驗證並儲存」<br>
-              <br>
-              ⚠ 免費版每日限 300~600 次 API 請求，一股約消耗 3~5 次。
+            <div class="settings-label">預計算資料</div>
+            <div id="dataInfo" class="settings-desc" style="line-height:2">讀取中...</div>
+            <div style="margin-top:8px">
+              <button class="btn-secondary" id="reloadDataBtn">🔄 重新載入 screener.json</button>
             </div>
           </div>
         </div>
 
-        <!-- Market & Batch -->
+        <!-- GitHub Actions Setup -->
         <div class="settings-section">
-          <div class="settings-section-title">🌐 查詢範圍設定</div>
+          <div class="settings-section-title">⚙️ GitHub Actions 設定教學</div>
           <div class="settings-row">
-            <div class="settings-label">市場範圍</div>
-            <div class="settings-desc">選擇要掃描的市場。「上市+上櫃」約 1,400+ 檔，建議配合篩選條件使用。</div>
-            <div class="settings-input-row" style="margin-top:8px">
-              <div class="select-wrapper" style="flex:1">
-                <select id="marketScopeSelect">
-                  <option value="TSE">上市（TSE）約 900 檔</option>
-                  <option value="OTC">上櫃（OTC）約 750 檔</option>
-                  <option value="ALL">上市 + 上櫃 全部約 1,650 檔</option>
-                </select>
-              </div>
-              <button class="btn-secondary" id="saveMarketScopeBtn">儲存</button>
+            <div class="settings-label">步驟一：申請 FinMind Token（選用）</div>
+            <div class="settings-desc" style="line-height:1.9">
+              FinMind Token 讓 GitHub Actions 取得完整指標（技術+基本+籌碼面）。<br>
+              不設定則只計算 TWSE 免費技術指標。<br>
+              前往 <a href="https://finmindtrade.com" target="_blank" style="color:var(--accent)">finmindtrade.com</a> 免費註冊後，至個人資料複製 Token。
             </div>
           </div>
           <div class="settings-row">
-            <div class="settings-label">單次批次分析上限</div>
-            <div class="settings-desc">FinMind 免費版有每日請求限制。建議設 30~60 檔/批次。<br>
-              每批分析完可選擇繼續或停止。最大值：120。</div>
+            <div class="settings-label">步驟二：GitHub Secrets 設定</div>
+            <div class="settings-desc" style="line-height:1.9">
+              1. GitHub Repo → <strong>Settings → Secrets and variables → Actions</strong><br>
+              2. <strong>New repository secret</strong><br>
+              3. Name：<code style="background:var(--bg-hover);padding:2px 6px;border-radius:4px">FINMIND_TOKEN</code><br>
+              4. Value：貼上 FinMind Token → Save
+            </div>
+          </div>
+          <div class="settings-row">
+            <div class="settings-label">步驟三：手動觸發第一次建置</div>
+            <div class="settings-desc" style="line-height:1.9">
+              1. GitHub Repo → <strong>Actions</strong> 分頁<br>
+              2. 左側選「<strong>每日更新台股資料</strong>」<br>
+              3. <strong>Run workflow → Run workflow</strong><br>
+              4. 等待約 10~30 分鐘後 <code style="background:var(--bg-hover);padding:2px 6px;border-radius:4px">data/screener.json</code> 自動更新<br>
+              <br>
+              ✅ 之後每個交易日 <strong>14:15</strong> 自動執行，約 1 分鐘後 PWA 生效。
+            </div>
+          </div>
+        </div>
+
+        <!-- FinMind Token -->
+        <div class="settings-section">
+          <div class="settings-section-title">🔑 FinMind Token（本機參考）</div>
+          <div class="settings-row">
+            <div class="settings-label">Token <span id="tokenStatus" class="token-status token-missing">未設定</span></div>
+            <div class="settings-desc">此 Token 存於本機 localStorage，供記錄用途。<br>
+              實際抓取資料請透過 GitHub Actions Secret 設定（上方步驟二）。</div>
             <div class="settings-input-row" style="margin-top:8px">
-              <input type="number" id="batchSizeInput" min="10" max="120" value="50" style="max-width:100px">
-              <button class="btn-secondary" id="saveBatchSizeBtn">儲存</button>
+              <input type="text" id="finmindToken" placeholder="貼上 FinMind Token（本機記錄）">
+              <button class="btn-secondary" id="saveTokenBtn">儲存</button>
             </div>
           </div>
         </div>
 
         <!-- Cache -->
         <div class="settings-section">
-          <div class="settings-section-title">📦 快取管理</div>
+          <div class="settings-section-title">🗑 快取管理</div>
           <div class="settings-row">
-            <div class="settings-label">清除本地快取</div>
-            <div class="settings-desc">清除暫存資料，下次查詢將重新從 API 取得最新資料。</div>
-            <div style="margin-top:8px"><button class="btn-secondary" id="clearCacheBtn">🗑 清除所有快取</button></div>
-          </div>
-        </div>
-
-        <!-- Data sources -->
-        <div class="settings-section">
-          <div class="settings-section-title">ℹ️ 資料來源說明</div>
-          <div class="settings-row">
-            <div class="settings-desc" style="line-height:2">
-              <strong style="color:#4FC3F7">技術面</strong> — FinMind TaiwanStockPrice（歷史股價）<br>
-              <strong style="color:#81C784">基本面（月營收）</strong> — FinMind TaiwanStockMonthRevenue<br>
-              <strong style="color:#81C784">基本面（財報）</strong> — FinMind TaiwanStockFinancialStatements<br>
-              <strong style="color:#FFB74D">法人買賣超</strong> — FinMind TaiwanStockInstitutionalInvestors<br>
-              <strong style="color:#FFB74D">籌碼集中度</strong> — FinMind TaiwanStockShareholderStructure<br>
-              <strong style="color:var(--accent)">個股清單 + 今日行情</strong> — TWSE/TPEX Open API（免費，無需 Token）<br>
-              <br>
-              ⚠ <strong>V0.2 限制：</strong><br>
-              • 買賣家數差：需 TWSE 分點資料，V0.2 暫不支援<br>
-              • RS 指標：相對 TAIEX 計算，非全市場標準排名<br>
-              • 未選擇篩選條件時：只使用 TWSE 即時資料，不消耗 FinMind 配額
-            </div>
+            <div class="settings-label">清除 screener.json 快取</div>
+            <div class="settings-desc">清除 30 分鐘本地快取，下次查詢時重新讀取最新資料。</div>
+            <div style="margin-top:8px"><button class="btn-secondary" id="clearCacheBtn">🗑 清除快取</button></div>
           </div>
         </div>
 
         <!-- About -->
         <div class="settings-section">
-          <div class="settings-section-title">🚀 關於此應用</div>
+          <div class="settings-section-title">🚀 關於</div>
           <div class="settings-row">
             <div class="settings-desc" style="line-height:1.9">
-              版本：<strong>V0.2</strong><br>
-              部署：GitHub Pages（純靜態 PWA）<br>
-              <br>
+              版本：<strong>V0.6</strong><br>
+              部署：GitHub Pages（靜態 PWA）<br>
+              資料更新：GitHub Actions（每日 14:15）<br>
+              篩選引擎：瀏覽器端 JS（無 API 呼叫，瞬間完成）<br><br>
               📌 本工具僅供參考，不構成投資建議。
             </div>
           </div>
