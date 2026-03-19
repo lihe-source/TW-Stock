@@ -8,7 +8,7 @@
  *  - 右上角顯示 screener.json 的實際資料日期
  */
 
-const APP_VERSION = 'V1.8';
+const APP_VERSION = 'V1.9';
 
 const CFG = {
   SCREENER_JSON: './data/screener.json',  // 預計算資料
@@ -106,8 +106,8 @@ function applyFilters(stocks) {
     noProfitLoss:      s => s.noProfitLoss,
     chipConcentration: s => s.chipConcentration,
     buyerSellerDiff:   s => null,  // not available
-    foreignBuy:        s => s.foreignBuy,
-    trustBuy:          s => s.trustBuy,
+    foreignBuy:        s => s.foreignBuy5d  ?? s.foreignBuy,   // 優先 5 日累計，備援今日
+    trustBuy:          s => s.trustBuy5d    ?? s.trustBuy,
     bigHolderIncrease: s => s.bigHolderIncrease,
     institutionalRecord: s => s.institutionalRecord,
   };
@@ -201,7 +201,7 @@ const UI = {
   },
 
   renderTags(){
-    const L={rs90:'RS > 90',nearMonthlyHigh:'距月高 ≤ 5%',shortMAAlign:'短均排列',longMAAlign:'中長均排列',aboveSubPoint:'站上MA5扣抵',revenueHighRecord:'營收創高',revenueYoY:'YoY連2月>20%',revenueMoM:'MoM連2月>20%',marginGrowth:'毛/營益率↑',noProfitLoss:'無虧損',chipConcentration:'籌碼集中↑',buyerSellerDiff:'買賣家數差<0',foreignBuy:'外資買超',trustBuy:'投信買超',bigHolderIncrease:'大戶比例↑',institutionalRecord:'法人持股季高'};
+    const L={rs90:'RS > 90',nearMonthlyHigh:'距月高 ≤ 5%',shortMAAlign:'短均排列',longMAAlign:'中長均排列',aboveSubPoint:'站上MA5扣抵',revenueHighRecord:'營收創高',revenueYoY:'YoY連2月>20%',revenueMoM:'MoM連2月>20%',marginGrowth:'毛/營益率↑',noProfitLoss:'無虧損',chipConcentration:'籌碼集中↑',buyerSellerDiff:'買賣家數差<0',foreignBuy:'外資5日買超',trustBuy:'投信5日買超',bigHolderIncrease:'大戶比例↑',institutionalRecord:'法人持股季高'};
     const el=document.getElementById('activeTags'); if(!el)return;
     const af=getAF();
     el.innerHTML=af.length===0
@@ -235,7 +235,7 @@ const UI = {
       return;
     }
 
-    const LABELS={rs90:'RS>90',nearMonthlyHigh:'距月高≤5%',shortMAAlign:'短均排列',longMAAlign:'中長均排列',aboveSubPoint:'站上MA5扣抵',revenueHighRecord:'營收創高',revenueYoY:'YoY連2月>20%',revenueMoM:'MoM連2月>20%',marginGrowth:'毛/營益率↑',noProfitLoss:'無虧損',chipConcentration:'籌碼集中↑',buyerSellerDiff:'買賣家數差<0',foreignBuy:'外資買超',trustBuy:'投信買超',bigHolderIncrease:'大戶比例↑',institutionalRecord:'法人持股季高'};
+    const LABELS={rs90:'RS>90',nearMonthlyHigh:'距月高≤5%',shortMAAlign:'短均排列',longMAAlign:'中長均排列',aboveSubPoint:'站上MA5扣抵',revenueHighRecord:'營收創高',revenueYoY:'YoY連2月>20%',revenueMoM:'MoM連2月>20%',marginGrowth:'毛/營益率↑',noProfitLoss:'無虧損',chipConcentration:'籌碼集中↑',buyerSellerDiff:'買賣家數差<0',foreignBuy:'外資5日買超',trustBuy:'投信5日買超',bigHolderIncrease:'大戶比例↑',institutionalRecord:'法人持股季高'};
     const filterBar = af.length===0
       ? ''
       : `<div class="results-filter-bar">${af.map(f=>`<span class="filter-tag" style="font-size:10px;padding:2px 7px">${LABELS[f]||f}</span>`).join('')}</div>`;
@@ -276,8 +276,8 @@ const UI = {
               <th style="color:#81C784">毛利率<small style="display:block;opacity:.6;font-size:8px;font-weight:400">%</small></th>
               <th style="color:#81C784">營益率<small style="display:block;opacity:.6;font-size:8px;font-weight:400">%</small></th>
               <th style="color:#81C784">盈虧</th>
-              <th style="color:#FFB74D">外資<small style="display:block;opacity:.6;font-size:8px;font-weight:400">今日淨(張)</small></th>
-              <th style="color:#FFB74D">投信<small style="display:block;opacity:.6;font-size:8px;font-weight:400">今日淨(張)</small></th>
+              <th style="color:#FFB74D">外資<small style="display:block;opacity:.6;font-size:8px;font-weight:400">5日淨(張)</small></th>
+              <th style="color:#FFB74D">投信<small style="display:block;opacity:.6;font-size:8px;font-weight:400">5日淨(張)</small></th>
               <th style="color:#FFB74D">大戶<small style="display:block;opacity:.6;font-size:8px;font-weight:400">持股變化</small></th>
             </tr>
           </thead>
@@ -319,8 +319,8 @@ const UI = {
       <td class="num-cell">${r.grossMargin!=null?n2(r.grossMargin,1)+'%':'--'}</td>
       <td class="num-cell">${r.opMargin!=null?n2(r.opMargin,1)+'%':'--'}</td>
       <td>${this._pill(r.noProfitLoss,'獲利','虧損')}</td>
-      <td>${this._numPill(r.foreignNet!=null?Math.round(r.foreignNet/1000):null,'張')}</td>
-      <td>${this._numPill(r.trustNet!=null?Math.round(r.trustNet/1000):null,'張')}</td>
+      <td>${this._numPill(r.foreignNet5d!=null?Math.round(r.foreignNet5d/1000):r.foreignNet!=null?Math.round(r.foreignNet/1000):null,'張')}</td>
+      <td>${this._numPill(r.trustNet5d!=null?Math.round(r.trustNet5d/1000):r.trustNet!=null?Math.round(r.trustNet/1000):null,'張')}</td>
       <td>${this._pill(r.bigHolderIncrease,'增加','減少')}</td>
       <td>
         <span class="watch-star ${starred?'starred':''}"
