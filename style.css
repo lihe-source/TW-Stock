@@ -1093,6 +1093,17 @@ textarea {
 .page.active .page-scroll > *:nth-child(4) { animation-delay: 120ms; }
 .page.active .page-scroll > *:nth-child(5) { animation-delay: 160ms; }
 
+/* ── Results filter bar (shows active filters at top of results) ── */
+.results-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 8px 14px 6px;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border-light);
+  flex-shrink: 0;
+}
+
 /* ── Progress bar ── */
 .progress-bar-wrap {
   height: 3px;

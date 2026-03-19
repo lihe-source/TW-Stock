@@ -8,7 +8,7 @@
  *  - 右上角顯示 screener.json 的實際資料日期
  */
 
-const APP_VERSION = 'V1.7';
+const APP_VERSION = 'V1.8';
 
 const CFG = {
   SCREENER_JSON: './data/screener.json',  // 預計算資料

@@ -37,7 +37,7 @@
         <span class="data-date-label" id="dataDate">資料 --/--/--</span>
         <span class="data-fetch-time" id="fetchTime">尚未查詢</span>
       </div>
-      <span class="version-badge" id="versionBadge">V1.6</span>
+      <span class="version-badge" id="versionBadge">V1.8</span>
       <button class="theme-btn" id="themeBtn" title="切換深色/淺色">🌙</button>
     </div>
   </header>
@@ -93,7 +93,7 @@
             </label>
             <label class="filter-item">
               <input type="checkbox" id="filter-aboveSubPoint" class="filter-checkbox" data-filter="aboveSubPoint" data-cat="tech">
-              <span class="filter-label">站上扣抵值<small>收盤 &gt; 20/60日前股價</small></span>
+              <span class="filter-label">站上扣抵值<small>現價 &gt; 5日前收盤（MA5扣抵）</small></span>
             </label>
           </div>
         </div>
@@ -219,53 +219,6 @@
           </div>
         </div>
 
-        <!-- GitHub Actions Setup -->
-        <div class="settings-section">
-          <div class="settings-section-title">⚙️ GitHub Actions 設定教學</div>
-          <div class="settings-row">
-            <div class="settings-label">步驟一：申請 FinMind Token（選用）</div>
-            <div class="settings-desc" style="line-height:1.9">
-              FinMind Token 讓 GitHub Actions 取得完整指標（技術+基本+籌碼面）。<br>
-              不設定則只計算 TWSE 免費技術指標。<br>
-              前往 <a href="https://finmindtrade.com" target="_blank" style="color:var(--accent)">finmindtrade.com</a> 免費註冊後，至個人資料複製 Token。
-            </div>
-          </div>
-          <div class="settings-row">
-            <div class="settings-label">步驟二：GitHub Secrets 設定</div>
-            <div class="settings-desc" style="line-height:1.9">
-              1. GitHub Repo → <strong>Settings → Secrets and variables → Actions</strong><br>
-              2. <strong>New repository secret</strong><br>
-              3. Name：<code style="background:var(--bg-hover);padding:2px 6px;border-radius:4px">FINMIND_TOKEN</code><br>
-              4. Value：貼上 FinMind Token → Save
-            </div>
-          </div>
-          <div class="settings-row">
-            <div class="settings-label">步驟三：手動觸發第一次建置</div>
-            <div class="settings-desc" style="line-height:1.9">
-              1. GitHub Repo → <strong>Actions</strong> 分頁<br>
-              2. 左側選「<strong>每日更新台股資料</strong>」<br>
-              3. <strong>Run workflow → Run workflow</strong><br>
-              4. 等待約 10~30 分鐘後 <code style="background:var(--bg-hover);padding:2px 6px;border-radius:4px">data/screener.json</code> 自動更新<br>
-              <br>
-              ✅ 之後每個交易日 <strong>14:15</strong> 自動執行，約 1 分鐘後 PWA 生效。
-            </div>
-          </div>
-        </div>
-
-        <!-- FinMind Token -->
-        <div class="settings-section">
-          <div class="settings-section-title">🔑 FinMind Token（本機參考）</div>
-          <div class="settings-row">
-            <div class="settings-label">Token <span id="tokenStatus" class="token-status token-missing">未設定</span></div>
-            <div class="settings-desc">此 Token 存於本機 localStorage，供記錄用途。<br>
-              實際抓取資料請透過 GitHub Actions Secret 設定（上方步驟二）。</div>
-            <div class="settings-input-row" style="margin-top:8px">
-              <input type="text" id="finmindToken" placeholder="貼上 FinMind Token（本機記錄）">
-              <button class="btn-secondary" id="saveTokenBtn">儲存</button>
-            </div>
-          </div>
-        </div>
-
         <!-- Cache -->
         <div class="settings-section">
           <div class="settings-section-title">🗑 快取管理</div>
@@ -281,9 +234,9 @@
           <div class="settings-section-title">🚀 關於</div>
           <div class="settings-row">
             <div class="settings-desc" style="line-height:1.9">
-              版本：<strong>V1.6</strong><br>
+              版本：<strong>V1.8</strong><br>
               部署：GitHub Pages（靜態 PWA）<br>
-              資料更新：GitHub Actions（每日 14:15）<br>
+              資料更新：GitHub Actions（每日 14:30）<br>
               篩選引擎：瀏覽器端 JS（無 API 呼叫，瞬間完成）<br><br>
               📌 本工具僅供參考，不構成投資建議。
             </div>
