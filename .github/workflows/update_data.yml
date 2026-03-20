@@ -2,7 +2,7 @@ name: 每日更新台股資料
 
 on:
   schedule:
-    # 台灣時間 15:30 = UTC 07:30（收盤後 2 小時，確保 TWSE 資料完整）
+    # 台灣時間 15:30 = UTC 07:30
     - cron: '30 7 * * 1-5'
   workflow_dispatch:
     inputs:
@@ -31,9 +31,15 @@ jobs:
 
       - name: Build screener data
         env:
+          # FinMind 免費版每 Key 約 200 次
+          # 覆蓋 1072 支需要 6 個 Key（6 × 200 = 1200 次）
+          # 申請方式：用不同 Email 在 finmindtrade.com 各註冊一個免費帳號
           FINMIND_TOKEN:   ${{ secrets.FINMIND_TOKEN }}
           FINMIND_TOKEN_2: ${{ secrets.FINMIND_TOKEN_2 }}
           FINMIND_TOKEN_3: ${{ secrets.FINMIND_TOKEN_3 }}
+          FINMIND_TOKEN_4: ${{ secrets.FINMIND_TOKEN_4 }}
+          FINMIND_TOKEN_5: ${{ secrets.FINMIND_TOKEN_5 }}
+          FINMIND_TOKEN_6: ${{ secrets.FINMIND_TOKEN_6 }}
           STOCK_LIMIT:     ${{ github.event.inputs.stock_limit || '0' }}
         run: python3 scripts/build_data.py
 
@@ -43,12 +49,13 @@ jobs:
           import json, sys
           d = json.load(open('data/screener.json'))
           n = d['stockCount']
+          c = d.get('coverage', {})
           print(f'stockCount : {n}')
           print(f'dataDate   : {d[\"dataDate\"]}')
-          print(f'coverage   : {d.get(\"coverage\",{})}')
+          print(f'coverage   : {c}')
+          rev = c.get('revenue', 0)
+          print(f'月營收覆蓋率: {rev}/{n} ({rev/n*100:.1f}%)')
           if n == 0: print('ERROR: no stocks!'); sys.exit(1)
-          for s in d['stocks'][:3]:
-              print(f'  {s[\"code\"]} rs={s[\"rsScore\"]} f5d={s.get(\"foreignBuy5d\")}')
           "
 
       - name: Commit & push
