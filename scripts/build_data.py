@@ -784,8 +784,10 @@ def self_check_price(results: list) -> bool:
         log.info(f'  ✅ 自檢通過：{CHECK_CODE} 程式={our_price} / Yahoo={ref_price} '
                  f'（差異 {diff_pct:.2f}%）')
         return True
-    log.info('=== 台股雷達資料建置 V3.71 開始 ===')
-    log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"}')
+
+
+def main():
+    log.info('=== 台股雷達資料建置 V3.72 開始 ===')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"} bs4:{"✓" if BS4_OK else "✗(regex備援)"}')
     data_date=date_now().strftime('%Y-%m-%d')
 
@@ -892,7 +894,7 @@ def self_check_price(results: list) -> bool:
     log.info('Step 7: 輸出...')
     os.makedirs('data',exist_ok=True)
     tw_now=date_now()
-    out={'version':'V3.71','generated':tw_now.isoformat(),'dataDate':data_date,
+    out={'version':'V3.72','generated':tw_now.isoformat(),'dataDate':data_date,
          'source':'yfinance+finmind+twse' if FINMIND_TOKENS else 'yfinance+twse',
          'stockCount':len(results),'coverage':{'technical':hrs,'revenue':hrv,'institutional':hfi},
          'marketSummary':mkt,'stocks':results}
