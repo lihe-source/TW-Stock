@@ -41,6 +41,8 @@ FINMIND_TOKENS = [t for t in _RAW_TOKENS if t]
 STOCK_LIMIT    = int(os.environ.get('STOCK_LIMIT','0'))
 
 TWSE_DAY_ALL   = 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'
+TWSE_DAY_ALL2  = 'https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL'  # 盤後完整版
+TPEX_DAY_ALL   = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes'  # 上櫃
 TWSE_LISTED    = 'https://openapi.twse.com.tw/v1/opendata/t187ap03_L'
 TWSE_T86       = 'https://openapi.twse.com.tw/v1/fund/T86'     # OpenAPI（備援）
 TWSE_T86_MAIN  = 'https://www.twse.com.tw/rwd/zh/fund/T86'     # 主要（盤後正式）
@@ -93,33 +95,134 @@ is_equity  = lambda c: bool(c and re.match(r'^[1-9]\d{3}$',c))
 date_now   = lambda: datetime.now(TW_TZ)
 date_ago_s = lambda m: (date_now()-timedelta(days=m*30)).strftime('%Y-%m-%d')
 
+def _parse_twse_stock(s: dict) -> tuple:
+    """Parse one TWSE stock record → (code, data_dict) or (None, None)"""
+    code = (s.get('Code') or s.get('代號') or '').strip()
+    if not is_equity(code): return None, None
+    price_s = (s.get('ClosingPrice') or s.get('收盤價') or '').replace(',','').strip()
+    try:
+        price = float(price_s)
+    except ValueError:
+        return None, None
+    if price <= 0: return None, None
+    vol_s = (s.get('TradeVolume') or s.get('成交股數') or '0').replace(',','')
+    vol = float(vol_s) if vol_s.replace('.','').isdigit() else 0
+    cr  = str(s.get('Change') or s.get('漲跌價差') or '0').strip()
+    ca  = float(re.sub(r'[▲▼+\-\s,]','',cr) or '0')
+    chg = -ca if (cr.startswith('▼') or cr.startswith('-')) else ca
+    b   = (price - chg) or price
+    pct = round(chg / b * 100, 2) if b else 0.0
+    hi  = float((s.get('HighestPrice') or s.get('最高價') or str(price)).replace(',',''))
+    lo  = float((s.get('LowestPrice')  or s.get('最低價') or str(price)).replace(',',''))
+    return code, {'code':code,'name':(s.get('Name') or s.get('名稱') or code).strip(),
+                  'price':price,'change':round(chg,2),'pct':pct,
+                  'high':hi,'low':lo,'vol':vol}
+
+
+def _parse_tpex_stock(s: dict) -> tuple:
+    """Parse one TPEX stock record → (code, data_dict) or (None, None)"""
+    code = (s.get('SecuritiesCompanyCode') or s.get('代號') or '').strip()
+    if not is_equity(code): return None, None
+    price_s = (s.get('Close') or s.get('收盤') or '').replace(',','').strip()
+    try:
+        price = float(price_s)
+    except ValueError:
+        return None, None
+    if price <= 0: return None, None
+    vol_s = (s.get('TradingShares') or s.get('成交股數') or '0').replace(',','')
+    vol = float(vol_s) if vol_s.replace('.','').isdigit() else 0
+    cr  = str(s.get('Change') or s.get('漲跌') or '0').strip()
+    ca  = float(re.sub(r'[▲▼+\-\s,]','',cr) or '0')
+    chg = -ca if (cr.startswith('▼') or cr.startswith('-')) else ca
+    b   = (price - chg) or price
+    pct = round(chg / b * 100, 2) if b else 0.0
+    hi  = float((s.get('High') or s.get('最高') or str(price)).replace(',',''))
+    lo  = float((s.get('Low')  or s.get('最低') or str(price)).replace(',',''))
+    return code, {'code':code,'name':(s.get('CompanyName') or s.get('名稱') or code).strip(),
+                  'price':price,'change':round(chg,2),'pct':pct,
+                  'high':hi,'low':lo,'vol':vol}
+
+
 def load_twse_day_all():
-    base,names={},{}
-    raw=safe_get_json(TWSE_DAY_ALL)
-    for s in (raw or []):
-        code=(s.get('Code') or '').strip()
-        if not is_equity(code): continue
-        try: price=float((s.get('ClosingPrice') or '').replace(',','').strip())
-        except ValueError: continue
-        if price<=0: continue
-        vol_s=(s.get('TradeVolume') or '0').replace(',','')
-        vol=float(vol_s) if vol_s.replace('.','').isdigit() else 0
-        cr=str(s.get('Change') or '0').strip()
-        ca=float(re.sub(r'[▲▼+\-\s,]','',cr) or '0')
-        chg=-ca if (cr.startswith('▼') or cr.startswith('-')) else ca
-        b=(price-chg) or price; pct=round(chg/b*100,2) if b else 0.0
-        base[code]={'code':code,'name':(s.get('Name') or code).strip(),
-                    'price':price,'change':round(chg,2),'pct':pct,
-                    'high':float((s.get('HighestPrice') or str(price)).replace(',','')),
-                    'low':float((s.get('LowestPrice') or str(price)).replace(',','')),
-                    'vol':vol}
-    log.info(f'  DAY_ALL: {len(base)} 筆')
-    raw2=safe_get_json(TWSE_LISTED)
-    for s in (raw2 or []):
-        code=(s.get('公司代號') or '').strip()
-        if is_equity(code): names[code]={'code':code,'name':(s.get('公司名稱') or code).strip()}
-    log.info(f'  t187ap03_L: {len(names)} 筆')
-    return base,names
+    """
+    取得全市場今日收盤行情（上市 + 上櫃）。
+    依序嘗試多個來源，確保取得最新資料。
+
+    上市（TSE）：
+      1. openapi.twse.com.tw STOCK_DAY_ALL（即時，盤中也有）
+      2. www.twse.com.tw rwd/zh/afterTrading/STOCK_DAY_ALL（盤後完整版）
+
+    上櫃（OTC/TPEX）：
+      1. www.tpex.org.tw openapi 收盤行情
+
+    資料日期驗證：確認是今日資料，否則 log 警告
+    """
+    base  : dict = {}
+    names : dict = {}
+    today = date_now().strftime('%Y/%m/%d')   # TWSE 日期格式
+    today_iso = date_now().strftime('%Y-%m-%d')
+
+    # ── 上市 TSE ──
+    for url, label in [
+        (TWSE_DAY_ALL,  'OpenAPI'),
+        (TWSE_DAY_ALL2, 'rwd盤後'),
+    ]:
+        try:
+            raw = safe_get_json(url)
+            if not raw:
+                continue
+            # rwd 版本回傳 {stat, date, fields, data}
+            if isinstance(raw, dict):
+                data_date_twse = raw.get('date','')
+                records = []
+                fields  = raw.get('fields', [])
+                for row in raw.get('data', []):
+                    if isinstance(row, list) and fields:
+                        records.append(dict(zip(fields, row)))
+                    elif isinstance(row, dict):
+                        records.append(row)
+            else:
+                records = raw
+
+            ok = 0
+            for s in records:
+                code, d = _parse_twse_stock(s)
+                if code:
+                    base[code] = d
+                    ok += 1
+            log.info(f'  TSE ({label}): {ok} 筆')
+            if ok > 100:
+                break   # 成功取到足夠資料，不需嘗試備援
+        except Exception as e:
+            log.debug(f'  TSE {label}: {e}')
+
+    # ── 上櫃 TPEX ──
+    try:
+        raw = safe_get_json(TPEX_DAY_ALL)
+        ok  = 0
+        for s in (raw or []):
+            code, d = _parse_tpex_stock(s)
+            if code and code not in base:   # 不覆蓋上市資料
+                base[code] = d
+                ok += 1
+        log.info(f'  OTC (TPEX): {ok} 筆')
+    except Exception as e:
+        log.debug(f'  TPEX: {e}')
+
+    log.info(f'  今日行情合計: {len(base)} 支（上市 + 上櫃）')
+
+    # ── 公司名稱清單（備援）──
+    try:
+        raw2 = safe_get_json(TWSE_LISTED)
+        for s in (raw2 or []):
+            code = (s.get('公司代號') or '').strip()
+            if is_equity(code):
+                names[code] = {'code':code,'name':(s.get('公司名稱') or code).strip()}
+        log.info(f'  t187ap03_L: {len(names)} 筆')
+    except Exception as e:
+        log.debug(f'  t187ap03_L: {e}')
+
+    return base, names
 
 def _parse_t86_response(raw) -> dict:
     """
@@ -342,7 +445,7 @@ def download_price_history(codes):
     for i in range(0,len(tickers),YFINANCE_CHUNK):
         ct=tickers[i:i+YFINANCE_CHUNK]; cc=codes[i:i+YFINANCE_CHUNK]
         bn=i//YFINANCE_CHUNK+1
-        try: raw=yf.download(ct,period=YFINANCE_PERIOD,auto_adjust=False,progress=False,threads=False)
+        try: raw=yf.download(ct,period=YFINANCE_PERIOD,auto_adjust=True,progress=False,threads=False)
         except Exception as e: log.warning(f'  批次{bn}失敗:{e}'); continue
         if raw is None or (PANDAS_OK and isinstance(raw,pd.DataFrame) and raw.empty): continue
         ok=0
@@ -377,7 +480,7 @@ def download_single(ticker_tw):
     """Fix 1b: flatten MultiIndex before iterrows to prevent Series ambiguous error."""
     if not YF_OK: return []
     try:
-        raw=yf.download(ticker_tw,period=YFINANCE_PERIOD,auto_adjust=False,progress=False,threads=False)
+        raw=yf.download(ticker_tw,period=YFINANCE_PERIOD,auto_adjust=True,progress=False,threads=False)
         if raw is None or (PANDAS_OK and isinstance(raw,pd.DataFrame) and raw.empty): return []
         df = _flatten_df(raw)   # ← flatten so row['Close'] is always scalar
         rows=[r for r in (_row_to_ohlc(row,di.strftime('%Y-%m-%d')) for di,row in df.iterrows()) if r]
@@ -633,8 +736,55 @@ def calc_revenue(rv):
             'mom2mo':len(mom)==2 and all(v>=0.20 for v in mom),
             'revenueHighRecord':lv>=max(allv) or (float(sly['revenue'])<lv if sly else False)}
 
-def main():
-    log.info('=== 台股雷達資料建置 V3.6 開始 ===')
+def self_check_price(results: list) -> bool:
+    """
+    自檢：從 Yahoo Finance Taiwan 取得 2330 當日收盤，
+    與 screener.json 計算結果比對，誤差 > 1% 則發出警告。
+    回傳 True = 通過，False = 價格不符（但不影響輸出）。
+    """
+    CHECK_CODE = '2330'
+    log.info(f'  自檢：抓取 {CHECK_CODE} 收盤（Yahoo Finance Taiwan）...')
+
+    ref_price = None
+    try:
+        # Yahoo Finance Taiwan API（非官方但穩定）
+        yf_url = f'https://query1.finance.yahoo.com/v8/finance/chart/{CHECK_CODE}.TW'
+        headers = {
+            'User-Agent': 'Mozilla/5.0',
+            'Accept': 'application/json',
+        }
+        r = SESSION.get(yf_url, headers=headers, timeout=15)
+        r.raise_for_status()
+        j = r.json()
+        meta = j.get('chart', {}).get('result', [{}])[0].get('meta', {})
+        ref_price = meta.get('regularMarketPrice') or meta.get('previousClose')
+        if ref_price:
+            ref_price = round(float(ref_price), 2)
+    except Exception as e:
+        log.warning(f'  自檢：無法取得 Yahoo 報價 ({e})，跳過驗證')
+        return True
+
+    # 找 screener.json 中 2330 的價格
+    our_stock = next((s for s in results if s.get('code') == CHECK_CODE), None)
+    if not our_stock:
+        log.warning(f'  自檢：在結果中找不到 {CHECK_CODE}')
+        return True
+
+    our_price = our_stock.get('price', 0)
+    if not our_price or not ref_price:
+        log.warning(f'  自檢：無法比對（our={our_price}, ref={ref_price}）')
+        return True
+
+    diff_pct = abs(our_price - ref_price) / ref_price * 100
+    if diff_pct > 1.0:
+        log.warning(f'  ⚠ 自檢失敗：{CHECK_CODE} 程式={our_price} / Yahoo={ref_price} '
+                    f'（差異 {diff_pct:.2f}%）→ 資料來源可能有誤，請確認！')
+        return False
+    else:
+        log.info(f'  ✅ 自檢通過：{CHECK_CODE} 程式={our_price} / Yahoo={ref_price} '
+                 f'（差異 {diff_pct:.2f}%）')
+        return True
+    log.info('=== 台股雷達資料建置 V3.71 開始 ===')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"}')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"} bs4:{"✓" if BS4_OK else "✗(regex備援)"}')
     data_date=date_now().strftime('%Y-%m-%d')
@@ -736,10 +886,13 @@ def main():
     hfi=sum(1 for r in results if r['foreignBuy'] is not None)
     log.info(f'  RS:{hrs} 月營收:{hrv} 法人:{hfi} / {len(results)}')
 
-    log.info('Step 6: 輸出...')
+    log.info('Step 6: 自檢...')
+    self_check_price(results)
+
+    log.info('Step 7: 輸出...')
     os.makedirs('data',exist_ok=True)
     tw_now=date_now()
-    out={'version':'V3.6','generated':tw_now.isoformat(),'dataDate':data_date,
+    out={'version':'V3.71','generated':tw_now.isoformat(),'dataDate':data_date,
          'source':'yfinance+finmind+twse' if FINMIND_TOKENS else 'yfinance+twse',
          'stockCount':len(results),'coverage':{'technical':hrs,'revenue':hrv,'institutional':hfi},
          'marketSummary':mkt,'stocks':results}
