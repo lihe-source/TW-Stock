@@ -53,7 +53,9 @@ YFINANCE_CHUNK = 50
 YFINANCE_PERIOD= '7mo'
 FINMIND_SLEEP  = 0.5   # V1.9: 1.2→0.5s（並發模式下更激進）
 TWSE_SLEEP     = 0.4
-QUOTA_PER_KEY  = 200  # FinMind 免費版實測每 Key 約 207 次，設 200 保守換 Key
+FINMIND_IP_LIMIT = 700   # GitHub Actions IP 每次 run 約 700 次總限制
+# 動態計算每 Key 配額（Keys 越多，每 Key 分到越少）
+QUOTA_PER_KEY = max(1, FINMIND_IP_LIMIT // max(len(FINMIND_TOKENS), 1))
 
 TWSE_T86_HIST  = 'https://www.twse.com.tw/fund/T86'  # 歷史 T86（法人5/10日累計）
 
@@ -468,65 +470,96 @@ class KeyWorker:
             return []
 
 
-def load_revenue_finmind(codes: List[str]) -> Dict[str, List[dict]]:
+def _load_existing_revenue() -> Dict[str, List[dict]]:
     """
-    FinMind 月營收 — 並發多 Key，自動偵測可用 Key 數量。
+    讀取現有 screener.json 裡的月營收，供增量更新使用。
+    讓「今天更新不到的股票」保留昨天的月營收，逐日累積直到 100% 覆蓋。
+    """
+    try:
+        if not os.path.exists(OUTPUT_PATH):
+            return {}
+        with open(OUTPUT_PATH, encoding='utf-8') as f:
+            d = json.load(f)
+        result = {}
+        for s in d.get('stocks', []):
+            code = s.get('code', '')
+            rev  = s.get('revenue')
+            rdate= s.get('revenueDate')
+            if code and rev is not None and rdate:
+                result[code] = [{'date': rdate, 'revenue': float(rev) * 1e8}]
+        log.info(f'  載入現有月營收快取: {len(result)} 支')
+        return result
+    except Exception as e:
+        log.debug(f'  讀取現有月營收失敗: {e}')
+        return {}
 
-    設計：
-      - 自動偵測 FINMIND_TOKEN ~ FINMIND_TOKEN_15，有幾個用幾個
-      - 每個 Key 一個 Thread，真正並發
-      - Key 配額耗盡後自動轉移給其他有額度的 Key
-      - 15 Keys × ~100次 = ~1500次，足夠覆蓋 1072 支
 
-    無 Token → 月營收全部顯示 N/A
+def load_revenue_finmind(codes: List[str],
+                         existing: Dict[str, List[dict]]) -> Dict[str, List[dict]]:
+    """
+    FinMind 月營收 — 並發多 Key + 增量累積策略。
+
+    核心設計：
+      - FinMind 每 Key 實測約 53 次/日
+      - 每日可更新：Key 數 × 53 支
+      - 今天更新不到的股票：保留 screener.json 現有資料（昨天的值）
+      - 2 天內完整輪一圈（15 Keys × 53 × 2天 = 1590 次 > 1072 支）
+
+    自動偵測有幾個 Key 就用幾個，不需修改程式碼。
     """
     if not FINMIND_TOKENS:
         log.info('  無 FinMind Token，月營收顯示 N/A')
-        return {}
+        return existing.copy()
 
     start   = date_ago_s(24)
     workers = [KeyWorker(t, i+1) for i, t in enumerate(FINMIND_TOKENS)]
     nk      = len(workers)
-    total_quota = nk * QUOTA_PER_KEY
+    today_quota = nk * QUOTA_PER_KEY   # 今天最多能抓的支數
 
-    log.info(f'  FinMind 月營收: {len(codes)} 支')
-    log.info(f'  偵測到 {nk} 個 Key（Keys: {", ".join(f"Key{w.index}" for w in workers)}）')
-    log.info(f'  配額估算: {nk} × {QUOTA_PER_KEY} = {total_quota} 次'
-             f'（{"✅ 足夠覆蓋" if total_quota >= len(codes) else f"⚠ 不足，覆蓋約 {total_quota}/{len(codes)} 支"}）')
+    # 決定今天從哪支開始（用日期 offset 輪流，確保每支都能輪到）
+    day_num   = date_now().timetuple().tm_yday
+    start_idx = (day_num * today_quota) % max(len(codes), 1)
 
-    result      : Dict[str, List[dict]] = {}
+    # 今日批次（從 start_idx 開始，循環取 today_quota 支）
+    today_batch = [codes[(start_idx + i) % len(codes)]
+                   for i in range(min(today_quota, len(codes)))]
+
+    log.info(f'  FinMind 月營收: {nk} 個 Key')
+    log.info(f'  IP 總限制: ~{FINMIND_IP_LIMIT} 次/run，每 Key 分配 {QUOTA_PER_KEY} 次')
+    log.info(f'  今日配額: {today_quota} 次，更新 {len(today_batch)} 支')
+    log.info(f'  今日範圍: {today_batch[0]}~{today_batch[-1]}（輪流覆蓋，每 {max(1,len(codes)//max(today_quota,1))} 天一圈）')
+    log.info(f'  其餘 {len(codes)-len(today_batch)} 支保留昨日資料')
+
+    # 從現有資料開始（今天更新的才覆蓋，其餘保留）
+    result      = existing.copy()
     result_lock = threading.Lock()
     counter     = {'done': 0}
     counter_lock= threading.Lock()
 
     def fetch_one(code: str, preferred: KeyWorker) -> None:
-        # 優先用 preferred worker，耗盡則找其他有額度的 Key
         worker = preferred if preferred.has_quota else \
                  next((w for w in workers if w.has_quota), None)
         if worker is None:
             return
-
         data = worker.fetch('TaiwanStockMonthRevenue', code, start)
         if data:
             s = sorted(data, key=lambda x: x['date'], reverse=True)
             with result_lock:
                 result[code] = [{'date': d['date'],
                                   'revenue': float(d['revenue'])} for d in s]
-
         with counter_lock:
             counter['done'] += 1
             n = counter['done']
         if n % 100 == 0:
             sm = ', '.join(f'Key{w.index}:{w.count}次{"✓" if w.has_quota else "滿"}' for w in workers)
-            log.info(f'  月營收進度: {n}/{len(codes)}，{sm}')
+            log.info(f'  月營收進度: {n}/{len(today_batch)}，{sm}')
 
-    # Round-robin 分配到各 Worker
+    # Round-robin 分配今日批次到各 Worker
     per_worker = [[] for _ in range(nk)]
-    for i, code in enumerate(codes):
+    for i, code in enumerate(today_batch):
         per_worker[i % nk].append(code)
 
     def run(wk: KeyWorker, batch: List[str]) -> None:
-        log.info(f'  Key{wk.index} 啟動，負責 {len(batch)} 支')
         for c in batch:
             fetch_one(c, wk)
 
@@ -539,8 +572,9 @@ def load_revenue_finmind(codes: List[str]) -> Dict[str, List[dict]]:
             except Exception as e:
                 log.warning(f'  Worker 異常: {e}')
 
+    total_with_rev = sum(1 for v in result.values() if v)
     sm = ', '.join(f'Key{w.index}:{w.count}次' for w in workers)
-    log.info(f'  月營收完成: {len(result)}/{len(codes)} 支 | {sm}')
+    log.info(f'  月營收完成: 今日更新 {counter["done"]} 支，累計 {total_with_rev}/{len(codes)} 支 | {sm}')
     return result
 
 avg=lambda lst: sum(lst)/len(lst) if lst else 0.0
@@ -600,7 +634,7 @@ def calc_revenue(rv):
             'revenueHighRecord':lv>=max(allv) or (float(sly['revenue'])<lv if sly else False)}
 
 def main():
-    log.info('=== 台股雷達資料建置 V3.2 開始 ===')
+    log.info('=== 台股雷達資料建置 V3.4 開始 ===')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"}')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"} bs4:{"✓" if BS4_OK else "✗(regex備援)"}')
     data_date=date_now().strftime('%Y-%m-%d')
@@ -648,8 +682,9 @@ def main():
             proxy=twse_stock_history('0050',7)
             log.info(f'  0050(TWSE):{len(proxy)}筆')
 
-    log.info('Step 4: 月營收（FinMind）...')
-    rev_all = load_revenue_finmind(all_codes)
+    log.info('Step 4: 月營收（FinMind 增量）...')
+    existing_rev = _load_existing_revenue()
+    rev_all = load_revenue_finmind(all_codes, existing_rev)
 
     log.info('Step 5: 指標...')
     p0050=sb.get('0050')
@@ -698,7 +733,7 @@ def main():
     log.info('Step 6: 輸出...')
     os.makedirs('data',exist_ok=True)
     tw_now=date_now()
-    out={'version':'V3.2','generated':tw_now.isoformat(),'dataDate':data_date,
+    out={'version':'V3.4','generated':tw_now.isoformat(),'dataDate':data_date,
          'source':'yfinance+finmind+twse' if FINMIND_TOKENS else 'yfinance+twse',
          'stockCount':len(results),'coverage':{'technical':hrs,'revenue':hrv,'institutional':hfi},
          'marketSummary':mkt,'stocks':results}
