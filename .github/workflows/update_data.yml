@@ -31,16 +31,9 @@ jobs:
 
       - name: Build screener data
         env:
-          # FinMind 免費版每 Key 約 200 次
-          # 覆蓋 1072 支需要 6 個 Key（6 × 200 = 1200 次）
-          # 申請方式：用不同 Email 在 finmindtrade.com 各註冊一個免費帳號
-          FINMIND_TOKEN:   ${{ secrets.FINMIND_TOKEN }}
-          FINMIND_TOKEN_2: ${{ secrets.FINMIND_TOKEN_2 }}
-          FINMIND_TOKEN_3: ${{ secrets.FINMIND_TOKEN_3 }}
-          FINMIND_TOKEN_4: ${{ secrets.FINMIND_TOKEN_4 }}
-          FINMIND_TOKEN_5: ${{ secrets.FINMIND_TOKEN_5 }}
-          FINMIND_TOKEN_6: ${{ secrets.FINMIND_TOKEN_6 }}
-          STOCK_LIMIT:     ${{ github.event.inputs.stock_limit || '0' }}
+          STOCK_LIMIT: ${{ github.event.inputs.stock_limit || '0' }}
+          # V3.0: 月營收改用 MOPS（完全免費，不需 Token）
+          # FinMind Token 已不再需要
         run: python3 scripts/build_data.py
 
       - name: Validate output
@@ -48,13 +41,14 @@ jobs:
           python3 -c "
           import json, sys
           d = json.load(open('data/screener.json'))
-          n = d['stockCount']
-          c = d.get('coverage', {})
+          n  = d['stockCount']
+          c  = d.get('coverage', {})
+          rev = c.get('revenue', 0)
           print(f'stockCount : {n}')
           print(f'dataDate   : {d[\"dataDate\"]}')
-          print(f'coverage   : {c}')
-          rev = c.get('revenue', 0)
-          print(f'月營收覆蓋率: {rev}/{n} ({rev/n*100:.1f}%)')
+          print(f'source     : {d[\"source\"]}')
+          print(f'RS覆蓋     : {c.get(\"technical\",0)}/{n}')
+          print(f'月營收覆蓋 : {rev}/{n} ({rev/n*100:.1f}%)')
           if n == 0: print('ERROR: no stocks!'); sys.exit(1)
           "
 
