@@ -197,6 +197,7 @@ def load_twse_day_all():
             log.debug(f'  TSE {label}: {e}')
 
     # ── 上櫃 TPEX ──
+    otc_codes: set = set()   # 記錄哪些是上櫃股票（yfinance 要用 .TWO）
     try:
         raw = safe_get_json(TPEX_DAY_ALL)
         ok  = 0
@@ -204,6 +205,7 @@ def load_twse_day_all():
             code, d = _parse_tpex_stock(s)
             if code and code not in base:   # 不覆蓋上市資料
                 base[code] = d
+                otc_codes.add(code)
                 ok += 1
         log.info(f'  OTC (TPEX): {ok} 筆')
     except Exception as e:
@@ -222,7 +224,7 @@ def load_twse_day_all():
     except Exception as e:
         log.debug(f'  t187ap03_L: {e}')
 
-    return base, names
+    return base, names, otc_codes
 
 def _parse_t86_response(raw) -> dict:
     """
@@ -436,10 +438,12 @@ def _extract_df(raw, ticker):
         return raw
     except: return None
 
-def download_price_history(codes):
+def download_price_history(codes, otc_codes: set = None):
+    """下載 K 線：上市用 .TW，上櫃用 .TWO（yfinance 格式不同）"""
     if not YF_OK: return {}
+    otc_codes = otc_codes or set()
     result={}
-    tickers=[f'{c}.TW' for c in codes]
+    tickers=[f'{c}.TWO' if c in otc_codes else f'{c}.TW' for c in codes]
     nb=-(-len(tickers)//YFINANCE_CHUNK)
     log.info(f'  下載 {len(tickers)} 支，共 {nb} 批')
     for i in range(0,len(tickers),YFINANCE_CHUNK):
@@ -787,16 +791,16 @@ def self_check_price(results: list) -> bool:
 
 
 def main():
-    log.info('=== 台股雷達資料建置 V3.72 開始 ===')
+    log.info('=== 台股雷達資料建置 V3.73 開始 ===')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"} bs4:{"✓" if BS4_OK else "✗(regex備援)"}')
     data_date=date_now().strftime('%Y-%m-%d')
 
     log.info('Step 1: TWSE...')
-    sb,nm=load_twse_day_all()
+    sb,nm,otc_codes=load_twse_day_all()
     codes_set=set(sb)|set(nm)
     if STOCK_LIMIT: codes_set=set(sorted(codes_set)[:STOCK_LIMIT])
     all_codes=sorted(codes_set)
-    log.info(f'  共{len(all_codes)}支')
+    log.info(f'  共{len(all_codes)}支（上市{len(all_codes)-len(otc_codes)}支，上櫃{len(otc_codes)}支）')
 
     log.info('Step 2: T86 法人...')
     inst=load_t86()
@@ -823,7 +827,7 @@ def main():
         log.info(f'  大盤投信:{mkt["trustNetYi"]:+.2f}億 ({mkt["trustBuyCnt"]}買/{mkt["trustSellCnt"]}賣)')
 
     log.info('Step 3: yfinance K線...')
-    ph=download_price_history(all_codes) if YF_OK else {}
+    ph=download_price_history(all_codes, otc_codes) if YF_OK else {}
     proxy=ph.get('0050',[])
     if not proxy:
         log.info('  單獨下載0050...')
@@ -894,7 +898,7 @@ def main():
     log.info('Step 7: 輸出...')
     os.makedirs('data',exist_ok=True)
     tw_now=date_now()
-    out={'version':'V3.72','generated':tw_now.isoformat(),'dataDate':data_date,
+    out={'version':'V3.73','generated':tw_now.isoformat(),'dataDate':data_date,
          'source':'yfinance+finmind+twse' if FINMIND_TOKENS else 'yfinance+twse',
          'stockCount':len(results),'coverage':{'technical':hrs,'revenue':hrv,'institutional':hfi},
          'marketSummary':mkt,'stocks':results}
