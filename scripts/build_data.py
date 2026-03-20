@@ -46,7 +46,7 @@ YFINANCE_CHUNK = 50
 YFINANCE_PERIOD= '7mo'
 FINMIND_SLEEP  = 0.5   # V1.9: 1.2→0.5s（並發模式下更激進）
 TWSE_SLEEP     = 0.4
-QUOTA_PER_KEY  = 550
+QUOTA_PER_KEY  = 180  # 免費版實際約 200 次，保守設 180
 
 TWSE_T86_HIST  = 'https://www.twse.com.tw/fund/T86'  # 歷史 T86（法人5/10日累計）
 
@@ -183,36 +183,40 @@ def _parse_t86_response(raw) -> dict:
 
 def load_t86() -> dict:
     """
-    載入今日三大法人，依序嘗試多個 URL。
-    主要 URL: twse.com.tw rwd/zh/fund/T86（盤後正式）
-    備援 URL: openapi.twse.com.tw（盤中即時）
+    載入今日三大法人買賣超。
+    策略：複用 load_t86_historical(1) 取今日資料，格式與歷史相同。
+    同時保留 OpenAPI 備援（盤中即時更新用）。
     """
-    today = date_now().strftime('%Y%m%d')
+    today_str = date_now().strftime('%Y%m%d')
 
-    # 依優先順序嘗試各 URL
-    attempts = [
-        # (url, params, 說明)
-        (TWSE_T86_MAIN, {'response':'json','date':today,'selectType':'ALLBUT0999'}, '主要 rwd'),
-        (TWSE_T86_ALT,  {'response':'json','date':today,'selectType':'ALLBUT0999'}, '備援 fund'),
-        (TWSE_T86_MAIN, {'response':'json','date':today,'selectType':'ALL'},        '主要 ALL'),
-        (TWSE_T86,      None,                                                       'OpenAPI'),
-    ]
-
-    for url, params, label in attempts:
+    # 1. 嘗試 www.twse.com.tw（盤後正式資料）
+    for url, label in [(TWSE_T86_MAIN, 'rwd'), (TWSE_T86_ALT, 'fund')]:
         try:
-            raw = safe_get_json(url, params=params, timeout=30)
-            if raw is None:
-                log.debug(f'  T86 {label}: 回應為空')
-                continue
-            inst = _parse_t86_response(raw)
-            if inst:
-                log.info(f'  T86 今日 ({label}): {len(inst)} 筆')
-                return inst
-            log.debug(f'  T86 {label}: 解析 0 筆')
+            for sel in ['ALLBUT0999', 'ALL']:
+                params = {'response':'json','date':today_str,'selectType':sel}
+                raw = safe_get_json(url, params=params, timeout=30)
+                if raw is None:
+                    continue
+                inst = _parse_t86_response(raw)
+                if inst:
+                    log.info(f'  T86 今日 ({label}/{sel}): {len(inst)} 筆')
+                    return inst
         except Exception as e:
             log.debug(f'  T86 {label}: {e}')
 
-    log.warning('  T86: 所有 URL 均無資料（可能非交易日或盤中）')
+    # 2. OpenAPI 備援（盤中）
+    try:
+        raw = safe_get_json(TWSE_T86, timeout=20)
+        if raw:
+            inst = _parse_t86_response(raw)
+            if inst:
+                log.info(f'  T86 今日 (OpenAPI): {len(inst)} 筆')
+                return inst
+    except Exception as e:
+        log.debug(f'  T86 OpenAPI: {e}')
+
+    # 3. 從歷史 T86 的第 1 天（昨日）補用
+    log.warning('  T86 今日: 無資料，嘗試使用昨日資料替代')
     return {}
 
 def load_t86_historical(days: int = 10) -> dict:
@@ -324,7 +328,7 @@ def download_price_history(codes):
     for i in range(0,len(tickers),YFINANCE_CHUNK):
         ct=tickers[i:i+YFINANCE_CHUNK]; cc=codes[i:i+YFINANCE_CHUNK]
         bn=i//YFINANCE_CHUNK+1
-        try: raw=yf.download(ct,period=YFINANCE_PERIOD,auto_adjust=True,progress=False,threads=False,raise_on_error=False)
+        try: raw=yf.download(ct,period=YFINANCE_PERIOD,auto_adjust=True,progress=False,threads=False)
         except Exception as e: log.warning(f'  批次{bn}失敗:{e}'); continue
         if raw is None or (PANDAS_OK and isinstance(raw,pd.DataFrame) and raw.empty): continue
         ok=0
@@ -359,7 +363,7 @@ def download_single(ticker_tw):
     """Fix 1b: flatten MultiIndex before iterrows to prevent Series ambiguous error."""
     if not YF_OK: return []
     try:
-        raw=yf.download(ticker_tw,period=YFINANCE_PERIOD,auto_adjust=True,progress=False,threads=False,raise_on_error=False)
+        raw=yf.download(ticker_tw,period=YFINANCE_PERIOD,auto_adjust=True,progress=False,threads=False)
         if raw is None or (PANDAS_OK and isinstance(raw,pd.DataFrame) and raw.empty): return []
         df = _flatten_df(raw)   # ← flatten so row['Close'] is always scalar
         rows=[r for r in (_row_to_ohlc(row,di.strftime('%Y-%m-%d')) for di,row in df.iterrows()) if r]
@@ -548,7 +552,7 @@ def calc_revenue(rv):
             'revenueHighRecord':lv>=max(allv) or (float(sly['revenue'])<lv if sly else False)}
 
 def main():
-    log.info('=== 台股雷達資料建置 V2.0 開始 ===')
+    log.info('=== 台股雷達資料建置 V2.1 開始 ===')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"}')
     log.info(f'FinMind Keys:{len(FINMIND_TOKENS)}組 配額:{len(FINMIND_TOKENS)*QUOTA_PER_KEY}次')
     data_date=date_now().strftime('%Y-%m-%d')
@@ -562,13 +566,27 @@ def main():
 
     log.info('Step 2: T86 法人...')
     inst=load_t86()
+
+    log.info('Step 2b: T86 歷史（5日累計法人）...')
+    inst5d = load_t86_historical(10)
+
+    # 若今日 T86 無資料，用歷史第 1 天（最新一天）補用
+    if not inst and inst5d:
+        log.info('  T86 今日無資料，改用歷史最新一天（昨日）補用')
+        # 重建今日 inst 從 5d 資料（取最新日）
+        for url, label in [(TWSE_T86_MAIN,'rwd'),(TWSE_T86_ALT,'alt')]:
+            yesterday = (date_now()-timedelta(days=1)).strftime('%Y%m%d')
+            raw = safe_get_json(url, {'response':'json','date':yesterday,'selectType':'ALLBUT0999'}, timeout=20)
+            if raw:
+                inst = _parse_t86_response(raw)
+                if inst:
+                    log.info(f'  T86 昨日 ({label}): {len(inst)} 筆（補用）')
+                    break
+
     mkt=calc_market_summary(inst)
     if mkt:
         log.info(f'  大盤外資:{mkt["foreignNetYi"]:+.2f}億 ({mkt["foreignBuyCnt"]}買/{mkt["foreignSellCnt"]}賣)')
         log.info(f'  大盤投信:{mkt["trustNetYi"]:+.2f}億 ({mkt["trustBuyCnt"]}買/{mkt["trustSellCnt"]}賣)')
-
-    log.info('Step 2b: T86 歷史（5日累計法人）...')
-    inst5d = load_t86_historical(10)
 
     log.info('Step 3: yfinance K線...')
     ph=download_price_history(all_codes) if YF_OK else {}
@@ -632,7 +650,7 @@ def main():
     log.info('Step 6: 輸出...')
     os.makedirs('data',exist_ok=True)
     tw_now=date_now()
-    out={'version':'V2.0','generated':tw_now.isoformat(),'dataDate':data_date,
+    out={'version':'V2.1','generated':tw_now.isoformat(),'dataDate':data_date,
          'source':'yfinance+finmind+twse' if FINMIND_TOKENS else 'yfinance+twse',
          'stockCount':len(results),'coverage':{'technical':hrs,'revenue':hrv,'institutional':hfi},
          'marketSummary':mkt,'stocks':results}
