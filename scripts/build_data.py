@@ -634,7 +634,7 @@ def calc_revenue(rv):
             'revenueHighRecord':lv>=max(allv) or (float(sly['revenue'])<lv if sly else False)}
 
 def main():
-    log.info('=== 台股雷達資料建置 V3.4 開始 ===')
+    log.info('=== 台股雷達資料建置 V3.5 開始 ===')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"}')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"} bs4:{"✓" if BS4_OK else "✗(regex備援)"}')
     data_date=date_now().strftime('%Y-%m-%d')
@@ -733,7 +733,7 @@ def main():
     log.info('Step 6: 輸出...')
     os.makedirs('data',exist_ok=True)
     tw_now=date_now()
-    out={'version':'V3.4','generated':tw_now.isoformat(),'dataDate':data_date,
+    out={'version':'V3.5','generated':tw_now.isoformat(),'dataDate':data_date,
          'source':'yfinance+finmind+twse' if FINMIND_TOKENS else 'yfinance+twse',
          'stockCount':len(results),'coverage':{'technical':hrs,'revenue':hrv,'institutional':hfi},
          'marketSummary':mkt,'stocks':results}
