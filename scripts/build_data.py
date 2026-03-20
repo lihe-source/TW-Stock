@@ -46,7 +46,7 @@ YFINANCE_CHUNK = 50
 YFINANCE_PERIOD= '7mo'
 FINMIND_SLEEP  = 0.5   # V1.9: 1.2→0.5s（並發模式下更激進）
 TWSE_SLEEP     = 0.4
-QUOTA_PER_KEY  = 180  # 免費版實際約 200 次，保守設 180
+QUOTA_PER_KEY  = 550  # FinMind 免費版 600 次/Key，保守設 550
 
 TWSE_T86_HIST  = 'https://www.twse.com.tw/fund/T86'  # 歷史 T86（法人5/10日累計）
 
@@ -552,7 +552,7 @@ def calc_revenue(rv):
             'revenueHighRecord':lv>=max(allv) or (float(sly['revenue'])<lv if sly else False)}
 
 def main():
-    log.info('=== 台股雷達資料建置 V2.1 開始 ===')
+    log.info('=== 台股雷達資料建置 V2.2 開始 ===')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"}')
     log.info(f'FinMind Keys:{len(FINMIND_TOKENS)}組 配額:{len(FINMIND_TOKENS)*QUOTA_PER_KEY}次')
     data_date=date_now().strftime('%Y-%m-%d')
@@ -650,7 +650,7 @@ def main():
     log.info('Step 6: 輸出...')
     os.makedirs('data',exist_ok=True)
     tw_now=date_now()
-    out={'version':'V2.1','generated':tw_now.isoformat(),'dataDate':data_date,
+    out={'version':'V2.2','generated':tw_now.isoformat(),'dataDate':data_date,
          'source':'yfinance+finmind+twse' if FINMIND_TOKENS else 'yfinance+twse',
          'stockCount':len(results),'coverage':{'technical':hrs,'revenue':hrv,'institutional':hfi},
          'marketSummary':mkt,'stocks':results}
