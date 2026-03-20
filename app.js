@@ -8,7 +8,7 @@
  *  - 右上角顯示 screener.json 的實際資料日期
  */
 
-const APP_VERSION = 'V3.4';
+const APP_VERSION = 'V3.5';
 
 const CFG = {
   SCREENER_JSON: './data/screener.json',  // 預計算資料
@@ -54,7 +54,7 @@ async function fx(url) {
   const ctrl=new AbortController();
   const t=setTimeout(()=>ctrl.abort(), CFG.TIMEOUT_MS);
   try {
-    const r=await fetch(url,{signal:ctrl.signal});
+    const r=await fetch(url,{signal:ctrl.signal, cache:'no-store'});
     clearTimeout(t);
     if(!r.ok) throw new Error(`HTTP ${r.status}`);
     return await r.json();
@@ -65,22 +65,12 @@ async function fx(url) {
    LOAD PRE-COMPUTED DATA
    ───────────────────────────────────────────── */
 async function loadScreenerData() {
-  const ck = 'screener_json';
-  // Check localStorage cache first (max 30 min)
-  const cached = Cache.get(ck);
-  if (cached && cached.stocks && cached.stocks.length > 0) {
-    return cached;
-  }
-
-  // Add cache-busting query string to bypass browser HTTP cache
-  // This ensures we always get the latest screener.json from GitHub Pages
+  // 不使用 localStorage 快取 screener.json
+  // 每次都從網路取最新版本，確保顯示當日資料
+  // （GitHub Pages CDN 通常在 commit 後 1~3 分鐘更新）
   const url = CFG.SCREENER_JSON + '?_=' + Date.now();
-  const data = await fx(url);
+  const data = await fx(url, { cache: 'no-store' });
   if (!data) throw new Error('screener.json 無法讀取');
-
-  if (data.stocks && data.stocks.length > 0) {
-    Cache.set(ck, data, 30 * 60 * 1000);  // cache 30 min in localStorage
-  }
   return data;
 }
 
