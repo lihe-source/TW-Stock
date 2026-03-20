@@ -514,6 +514,76 @@ def download_single(ticker_tw):
     except Exception as e:
         log.warning(f'  download_single {ticker_tw}: {e}'); return []
 
+
+def download_financials(codes: List[str], otc_codes: set) -> Dict[str, dict]:
+    """
+    用 yfinance Ticker.quarterly_income_stmt 取季度財報。
+    完全免費，不消耗 FinMind 配額。
+    取得：毛利率、營業利益率、近期盈虧（淨利正負）。
+
+    因為每支需要獨立呼叫，批次下載，每批限速避免被封。
+    """
+    if not YF_OK:
+        return {}
+
+    result: Dict[str, dict] = {}
+    ok = 0
+    log.info(f'  yfinance 財報：下載 {len(codes)} 支...')
+
+    for i, code in enumerate(codes):
+        suffix = '.TWO' if code in otc_codes else '.TW'
+        try:
+            tk = yf.Ticker(f'{code}{suffix}')
+            # quarterly_income_stmt: rows=items, cols=dates
+            qf = tk.quarterly_income_stmt
+            if qf is None or (PANDAS_OK and isinstance(qf, pd.DataFrame) and qf.empty):
+                continue
+
+            def get_row(*candidates):
+                for c in candidates:
+                    for idx in qf.index:
+                        if c.lower() in str(idx).lower():
+                            row = qf.loc[idx]
+                            # 取最新一季（第一欄）
+                            val = row.iloc[0] if len(row) > 0 else None
+                            if val is not None and not (isinstance(val, float) and val != val):
+                                return float(val)
+                return None
+
+            revenue    = get_row('Total Revenue', 'Revenue')
+            gross      = get_row('Gross Profit')
+            op_income  = get_row('Operating Income', 'Operating Profit')
+            net_income = get_row('Net Income')
+
+            if revenue and revenue > 0:
+                gross_margin = round(gross / revenue * 100, 2) if gross else None
+                op_margin    = round(op_income / revenue * 100, 2) if op_income else None
+            else:
+                gross_margin = op_margin = None
+
+            no_loss = (net_income > 0) if net_income is not None else None
+
+            result[code] = {
+                'grossMargin':  gross_margin,
+                'opMargin':     op_margin,
+                'noProfitLoss': no_loss,
+                'marginGrowth': None,  # 需比較去年同季，暫不實作
+            }
+            ok += 1
+
+        except Exception as e:
+            log.debug(f'  財報 {code}: {e}')
+
+        # 每 30 支 log 一次進度
+        if (i + 1) % 30 == 0:
+            log.info(f'  yfinance 財報進度: {i+1}/{len(codes)}，成功 {ok} 支')
+        # 微量限速避免觸發 Yahoo 速率限制
+        if i % 5 == 4:
+            time.sleep(0.3)
+
+    log.info(f'  yfinance 財報完成: {ok}/{len(codes)} 支有財報資料')
+    return result
+
 def twse_stock_history(code,months=7):
     rows=[]
     for m in range(months):
@@ -819,7 +889,7 @@ def self_check_price(results: list, sb: dict) -> bool:
 
 
 def main():
-    log.info('=== 台股雷達資料建置 V3.76 開始 ===')
+    log.info('=== 台股雷達資料建置 V3.77 開始 ===')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"} bs4:{"✓" if BS4_OK else "✗(regex備援)"}')
     data_date=date_now().strftime('%Y-%m-%d')
 
@@ -865,6 +935,9 @@ def main():
             log.info('  0050 yfinance失敗，改用TWSE...')
             proxy=twse_stock_history('0050',7)
             log.info(f'  0050(TWSE):{len(proxy)}筆')
+
+    log.info('Step 3b: yfinance 季度財報（毛利率/盈虧）...')
+    fin_all = download_financials(all_codes, otc_codes)
 
     log.info('Step 4: 月營收（FinMind 增量）...')
     existing_rev = _load_existing_revenue()
@@ -913,12 +986,19 @@ def main():
                 except: pass
         rl=rev_all.get(code,[])
         if rl: r.update(calc_revenue(rl))
+        # 季度財報（毛利率/盈虧）
+        fin = fin_all.get(code, {})
+        if fin:
+            r['grossMargin']  = fin.get('grossMargin')
+            r['opMargin']     = fin.get('opMargin')
+            r['noProfitLoss'] = fin.get('noProfitLoss')
         results.append(r)
 
-    hrs=sum(1 for r in results if r['rsScore'] is not None)
-    hrv=sum(1 for r in results if r['revenue'] is not None)
-    hfi=sum(1 for r in results if r['foreignBuy'] is not None)
-    log.info(f'  RS:{hrs} 月營收:{hrv} 法人:{hfi} / {len(results)}')
+    hrs  = sum(1 for r in results if r['rsScore']       is not None)
+    hrv  = sum(1 for r in results if r['revenue']       is not None)
+    hfi  = sum(1 for r in results if r['foreignBuy']    is not None)
+    hfin = sum(1 for r in results if r['grossMargin']   is not None)
+    log.info(f'  RS:{hrs} 月營收:{hrv} 財報:{hfin} 法人:{hfi} / {len(results)}')
 
     log.info('Step 6: 自檢...')
     self_check_price(results, sb)
@@ -926,7 +1006,7 @@ def main():
     log.info('Step 7: 輸出...')
     os.makedirs('data',exist_ok=True)
     tw_now=date_now()
-    out={'version':'V3.76','generated':tw_now.isoformat(),'dataDate':data_date,
+    out={'version':'V3.77','generated':tw_now.isoformat(),'dataDate':data_date,
          'source':'yfinance+finmind+twse' if FINMIND_TOKENS else 'yfinance+twse',
          'stockCount':len(results),'coverage':{'technical':hrs,'revenue':hrv,'institutional':hfi},
          'marketSummary':mkt,'stocks':results}
