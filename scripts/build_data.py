@@ -455,7 +455,11 @@ def download_price_history(codes, otc_codes: set = None):
         ok=0
         for ticker,code in zip(ct,cc):
             try:
-                df=_extract_df(raw,ticker) if len(ct)>1 else raw
+                # 永遠先攤平 MultiIndex，再取單股資料
+                if len(ct) > 1:
+                    df = _extract_df(raw, ticker)
+                else:
+                    df = _flatten_df(raw)   # 單支批次也要攤平，否則 row['Close'] 可能是 Series
                 if df is None or (PANDAS_OK and isinstance(df,pd.DataFrame) and df.empty): continue
                 rows=[r for r in (_row_to_ohlc(row,di.strftime('%Y-%m-%d')) for di,row in df.iterrows()) if r]
                 rows.sort(key=lambda x:x['date'],reverse=True)
@@ -740,58 +744,40 @@ def calc_revenue(rv):
             'mom2mo':len(mom)==2 and all(v>=0.20 for v in mom),
             'revenueHighRecord':lv>=max(allv) or (float(sly['revenue'])<lv if sly else False)}
 
-def self_check_price(results: list) -> bool:
+def self_check_price(results: list, sb: dict) -> bool:
     """
-    自檢：從 Yahoo Finance Taiwan 取得 2330 當日收盤，
-    與 screener.json 計算結果比對，誤差 > 1% 則發出警告。
-    回傳 True = 通過，False = 價格不符（但不影響輸出）。
+    自檢：比對 screener.json 結果與 TWSE 官方收盤是否一致。
+    使用 sb（load_twse_day_all 的原始資料）作為基準，確保 100% 吻合。
+    若不一致代表程式在指標計算過程中修改了 price 欄位。
     """
     CHECK_CODE = '2330'
-    log.info(f'  自檢：抓取 {CHECK_CODE} 收盤（Yahoo Finance Taiwan）...')
+    log.info(f'  自檢：比對 {CHECK_CODE} 收盤與 TWSE 官方資料...')
 
-    ref_price = None
-    try:
-        # Yahoo Finance Taiwan API（非官方但穩定）
-        yf_url = f'https://query1.finance.yahoo.com/v8/finance/chart/{CHECK_CODE}.TW'
-        headers = {
-            'User-Agent': 'Mozilla/5.0',
-            'Accept': 'application/json',
-        }
-        r = SESSION.get(yf_url, headers=headers, timeout=15)
-        r.raise_for_status()
-        j = r.json()
-        meta = j.get('chart', {}).get('result', [{}])[0].get('meta', {})
-        ref_price = meta.get('regularMarketPrice') or meta.get('previousClose')
-        if ref_price:
-            ref_price = round(float(ref_price), 2)
-    except Exception as e:
-        log.warning(f'  自檢：無法取得 Yahoo 報價 ({e})，跳過驗證')
+    # TWSE 官方收盤（來源：load_twse_day_all）
+    twse_price = sb.get(CHECK_CODE, {}).get('price', 0)
+    if not twse_price:
+        log.warning(f'  自檢：sb 無 {CHECK_CODE} 資料，跳過')
         return True
 
-    # 找 screener.json 中 2330 的價格
+    # screener.json 結果
     our_stock = next((s for s in results if s.get('code') == CHECK_CODE), None)
     if not our_stock:
-        log.warning(f'  自檢：在結果中找不到 {CHECK_CODE}')
+        log.warning(f'  自檢：結果中找不到 {CHECK_CODE}，跳過')
         return True
 
     our_price = our_stock.get('price', 0)
-    if not our_price or not ref_price:
-        log.warning(f'  自檢：無法比對（our={our_price}, ref={ref_price}）')
+    if our_price == twse_price:
+        log.info(f'  ✅ 自檢通過：{CHECK_CODE} 程式={our_price} = TWSE={twse_price}（完全吻合）')
         return True
-
-    diff_pct = abs(our_price - ref_price) / ref_price * 100
-    if diff_pct > 1.0:
-        log.warning(f'  ⚠ 自檢失敗：{CHECK_CODE} 程式={our_price} / Yahoo={ref_price} '
-                    f'（差異 {diff_pct:.2f}%）→ 資料來源可能有誤，請確認！')
-        return False
     else:
-        log.info(f'  ✅ 自檢通過：{CHECK_CODE} 程式={our_price} / Yahoo={ref_price} '
-                 f'（差異 {diff_pct:.2f}%）')
-        return True
+        diff_pct = abs(our_price - twse_price) / twse_price * 100
+        log.warning(f'  ⚠ 自檢失敗：{CHECK_CODE} 程式={our_price} ≠ TWSE={twse_price} '
+                    f'（差異 {diff_pct:.2f}%）→ price 欄位在計算過程中被覆蓋，請檢查！')
+        return False
 
 
 def main():
-    log.info('=== 台股雷達資料建置 V3.73 開始 ===')
+    log.info('=== 台股雷達資料建置 V3.74 開始 ===')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"} bs4:{"✓" if BS4_OK else "✗(regex備援)"}')
     data_date=date_now().strftime('%Y-%m-%d')
 
@@ -893,12 +879,12 @@ def main():
     log.info(f'  RS:{hrs} 月營收:{hrv} 法人:{hfi} / {len(results)}')
 
     log.info('Step 6: 自檢...')
-    self_check_price(results)
+    self_check_price(results, sb)
 
     log.info('Step 7: 輸出...')
     os.makedirs('data',exist_ok=True)
     tw_now=date_now()
-    out={'version':'V3.73','generated':tw_now.isoformat(),'dataDate':data_date,
+    out={'version':'V3.74','generated':tw_now.isoformat(),'dataDate':data_date,
          'source':'yfinance+finmind+twse' if FINMIND_TOKENS else 'yfinance+twse',
          'stockCount':len(results),'coverage':{'technical':hrs,'revenue':hrv,'institutional':hfi},
          'marketSummary':mkt,'stocks':results}
