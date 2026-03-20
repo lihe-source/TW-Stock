@@ -2,8 +2,7 @@ name: 每日更新台股資料
 
 on:
   schedule:
-    # 台灣時間 15:30 = UTC 07:30
-    - cron: '30 7 * * 1-5'
+    - cron: '30 7 * * 1-5'   # 台灣時間 15:30
   workflow_dispatch:
     inputs:
       stock_limit:
@@ -31,9 +30,27 @@ jobs:
 
       - name: Build screener data
         env:
+          # FinMind Token 自動偵測：設定幾個就用幾個（最多支援 15 個）
+          # 每個 Key 約 100 次/日
+          # 覆蓋 1072 支需要 11 個 Key（11 × 100 = 1100 次）
+          # 建議申請 12~15 個以保留緩衝
+          # 申請方式：用不同 Email 在 finmindtrade.com 免費註冊
+          FINMIND_TOKEN:    ${{ secrets.FINMIND_TOKEN }}
+          FINMIND_TOKEN_2:  ${{ secrets.FINMIND_TOKEN_2 }}
+          FINMIND_TOKEN_3:  ${{ secrets.FINMIND_TOKEN_3 }}
+          FINMIND_TOKEN_4:  ${{ secrets.FINMIND_TOKEN_4 }}
+          FINMIND_TOKEN_5:  ${{ secrets.FINMIND_TOKEN_5 }}
+          FINMIND_TOKEN_6:  ${{ secrets.FINMIND_TOKEN_6 }}
+          FINMIND_TOKEN_7:  ${{ secrets.FINMIND_TOKEN_7 }}
+          FINMIND_TOKEN_8:  ${{ secrets.FINMIND_TOKEN_8 }}
+          FINMIND_TOKEN_9:  ${{ secrets.FINMIND_TOKEN_9 }}
+          FINMIND_TOKEN_10: ${{ secrets.FINMIND_TOKEN_10 }}
+          FINMIND_TOKEN_11: ${{ secrets.FINMIND_TOKEN_11 }}
+          FINMIND_TOKEN_12: ${{ secrets.FINMIND_TOKEN_12 }}
+          FINMIND_TOKEN_13: ${{ secrets.FINMIND_TOKEN_13 }}
+          FINMIND_TOKEN_14: ${{ secrets.FINMIND_TOKEN_14 }}
+          FINMIND_TOKEN_15: ${{ secrets.FINMIND_TOKEN_15 }}
           STOCK_LIMIT: ${{ github.event.inputs.stock_limit || '0' }}
-          # V3.0: 月營收改用 MOPS（完全免費，不需 Token）
-          # FinMind Token 已不再需要
         run: python3 scripts/build_data.py
 
       - name: Validate output
@@ -41,8 +58,8 @@ jobs:
           python3 -c "
           import json, sys
           d = json.load(open('data/screener.json'))
-          n  = d['stockCount']
-          c  = d.get('coverage', {})
+          n   = d['stockCount']
+          c   = d.get('coverage', {})
           rev = c.get('revenue', 0)
           print(f'stockCount : {n}')
           print(f'dataDate   : {d[\"dataDate\"]}')
