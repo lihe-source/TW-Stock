@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""台股雷達 build_data.py V1.9
+"""台股雷達 build_data.py V3.0
 Fix 1a: yfinance db locked  Fix 1b: Series ambiguous
 Fix 2: log every 50  Fix 3: today data  Fix 4: marketSummary
 """
@@ -23,6 +23,11 @@ try:
     YF_OK = True
 except ImportError:
     YF_OK = False
+
+try:
+    from bs4 import BeautifulSoup; BS4_OK = True
+except ImportError:
+    BS4_OK = False
 
 logging.basicConfig(level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
@@ -50,6 +55,11 @@ TWSE_SLEEP     = 0.4
 QUOTA_PER_KEY  = 200  # FinMind 免費版實測每 Key 約 207 次，設 200 保守換 Key
 
 TWSE_T86_HIST  = 'https://www.twse.com.tw/fund/T86'  # 歷史 T86（法人5/10日累計）
+
+# MOPS 月營收：一次請求取得所有上市公司，24個月只需24次請求
+# 上市(sii)：t21sc03_{民國年}_{月:02d}_0.html
+# 上櫃(otc)：另外的 URL（可選）
+MOPS_REV_SII = 'https://mops.twse.com.tw/nas/t21/sii/t21sc03_{roc}_{month:02d}_0.html'
 
 SESSION = requests.Session()
 SESSION.headers.update({
@@ -390,110 +400,125 @@ def twse_stock_history(code,months=7):
     rows.sort(key=lambda x:x['date'],reverse=True)
     return rows
 
-class KeyWorker:
-    def __init__(self,token,index,limit=QUOTA_PER_KEY):
-        self.token=token; self.index=index; self.limit=limit
-        self.count=0; self.exceeded=False
-        self._lock=threading.Lock(); self._last=0.0
-        self._s=requests.Session(); self._s.headers.update(SESSION.headers)
-    @property
-    def has_quota(self): return not self.exceeded and self.count<self.limit
-    def fetch(self,dataset,code,start_date):
-        with self._lock:
-            if self.exceeded: return []
-            w=FINMIND_SLEEP-(time.monotonic()-self._last)
-            if w>0: time.sleep(w)
-        p={'dataset':dataset,'data_id':code,'start_date':start_date,'token':self.token}
+def load_revenue_mops(months: int = 24) -> Dict[str, List[dict]]:
+    """
+    MOPS 月營收 — 完全免費，不需任何 Token。
+
+    每次請求一個月份的 HTML = 所有上市公司的月營收。
+    24 個月只需 24 次請求（原本 FinMind 需要 1072 次）。
+
+    URL: https://mops.twse.com.tw/nas/t21/sii/t21sc03_{民國年}_{月:02d}_0.html
+    HTML 表格欄位：公司代號 | 公司名稱 | 當月營收 | 上月營收 | 去年當月 | ...
+
+    備註：MOPS 曾對 GitHub Actions IP 封鎖，但 nas/ 路徑的靜態 HTML 通常不受限。
+    若連續失敗，自動改用 FinMind 補救（若有 token）。
+    """
+    now      = date_now()
+    result: Dict[str, List[dict]] = {}
+    fetched  = 0
+    failed   = 0
+
+    log.info(f'  MOPS 月營收：抓取最近 {months} 個月...')
+
+    for m in range(months):
+        target    = now - timedelta(days=m * 30)
+        roc_year  = target.year - 1911
+        month     = target.month
+        iso_date  = f'{target.year}-{month:02d}-01'
+
+        # 當月資料通常次月 10 日才公告，跳過可能尚未發布的月份
+        if m == 0 and now.day < 12:
+            log.debug(f'  跳過 {target.year}/{month:02d}（當月尚未公告）')
+            continue
+
+        url = MOPS_REV_SII.format(roc=roc_year, month=month)
         try:
-            r=self._s.get(FINMIND_BASE,params=p,timeout=25)
-            with self._lock: self._last=time.monotonic()
-            if r.status_code==402:
-                with self._lock:
-                    if not self.exceeded: self.exceeded=True; log.warning(f'  Key{self.index} 402({self.count}次)')
-                return []
-            if r.status_code==422: return []
+            r = SESSION.get(url, timeout=30)
             r.raise_for_status()
-            c=r.content.strip()
-            if not c or c[:1] in (b'<',b'\n'): return []
-            j=r.json()
-            if j.get('status')!=200:
-                m=j.get('msg','')
-                if any(k in m for k in ('quota','次數','超過','limit')):
-                    with self._lock: self.exceeded=True
-                return []
-            with self._lock:
-                self.count+=1
-                if self.count>=self.limit: self.exceeded=True; log.info(f'  Key{self.index}達上限')
-            return j.get('data',[])
-        except Exception as e: log.debug(f'  Key{self.index} {code}:{e}'); return []
 
-def load_revenue_finmind(codes):
+            # 解碼 HTML（MOPS 可能是 big5 或 utf-8）
+            for enc in (r.apparent_encoding, 'big5', 'utf-8', 'cp950'):
+                try:
+                    html = r.content.decode(enc or 'big5', errors='replace')
+                    break
+                except Exception:
+                    html = r.text
+
+            parsed = _parse_mops_revenue(html)
+            if not parsed:
+                log.debug(f'  MOPS {target.year}/{month:02d}: 解析 0 筆')
+                failed += 1
+                if failed >= 3:
+                    log.warning('  MOPS 連續失敗 3 次，可能被封鎖，停止嘗試')
+                    break
+                continue
+
+            for code, rev in parsed.items():
+                result.setdefault(code, []).append({'date': iso_date, 'revenue': rev})
+
+            fetched += 1
+            failed  = 0   # 成功則重設連續失敗計數
+            log.info(f'  MOPS {target.year}/{month:02d}: {len(parsed)} 筆')
+            time.sleep(1.5)   # MOPS 禮貌等待
+
+        except Exception as e:
+            log.warning(f'  MOPS {roc_year}/{month:02d} 失敗: {e}')
+            failed += 1
+            if failed >= 3:
+                log.warning('  MOPS 連續失敗，停止')
+                break
+
+    # 每支公司按日期降序排列
+    for code in result:
+        result[code].sort(key=lambda x: x['date'], reverse=True)
+
+    log.info(f'  MOPS 月營收完成：{fetched} 個月，{len(result)} 支公司')
+    return result
+
+
+def _parse_mops_revenue(html: str) -> Dict[str, float]:
     """
-    FinMind 月營收 — 多 Key 並發 + 額度溢出轉移。
-
-    策略：
-      - N 個 Key 各自負責 codes 的 1/N，同時並發
-      - 若某 Key 額度耗盡，其剩餘 code 自動轉移給下一個有額度的 Key
-      - 所有 Key 都耗盡後，剩餘股票月營收顯示 N/A
+    解析 MOPS 月營收 HTML，回傳 {code: revenue_float}。
+    優先用 BeautifulSoup，備援用 regex。
     """
-    if not FINMIND_TOKENS:
-        log.info('  無Token，月營收N/A'); return {}
+    result: Dict[str, float] = {}
 
-    start   = date_ago_s(24)
-    workers = [KeyWorker(t,i+1) for i,t in enumerate(FINMIND_TOKENS)]
-    nk      = len(workers)
+    if BS4_OK:
+        try:
+            soup = BeautifulSoup(html, 'lxml')
+            for row in soup.find_all('tr'):
+                cells = row.find_all('td')
+                if len(cells) < 3:
+                    continue
+                code = cells[0].get_text(strip=True)
+                if not is_equity(code):
+                    continue
+                rev_str = cells[2].get_text(strip=True).replace(',', '').replace(' ', '')
+                try:
+                    rev = float(rev_str)
+                    if rev > 0:
+                        result[code] = rev
+                except ValueError:
+                    pass
+            if result:
+                return result
+        except Exception:
+            pass
 
-    # 共用 overflow queue：Key 耗盡時把剩餘 code 推入，由有額度的 Key 接手
-    from queue import Queue
-    overflow_q: Queue = Queue()
-    overflow_lock = threading.Lock()
+    # Regex 備援
+    pattern = (r'<td[^>]*>\s*([1-9]\d{3})\s*</td>'
+               r'\s*<td[^>]*>[^<]*</td>'
+               r'\s*<td[^>]*>\s*([\d,]+)\s*</td>')
+    for m in re.finditer(pattern, html, re.IGNORECASE | re.DOTALL):
+        code    = m.group(1).strip()
+        rev_str = m.group(2).replace(',', '')
+        try:
+            rev = float(rev_str)
+            if rev > 0:
+                result[code] = rev
+        except ValueError:
+            pass
 
-    log.info(f'  FinMind月營收:{len(codes)}支，{nk}個並發Key，額度溢出自動轉移')
-    log.info(f'  每Key上限:{QUOTA_PER_KEY}次，合計:{nk*QUOTA_PER_KEY}次')
-
-    result={}; rl=threading.Lock()
-    cnt={'n':0}; cl=threading.Lock()
-
-    def fetch_with_fallback(code: str, preferred_worker: 'KeyWorker') -> None:
-        """嘗試用 preferred_worker，若已耗盡則找下一個有額度的 Key"""
-        worker = preferred_worker
-        if not worker.has_quota:
-            # 找還有額度的 Key
-            worker = next((w for w in workers if w.has_quota), None)
-            if worker is None:
-                return   # 全部 Key 耗盡
-            log.debug(f'  {code} 溢出→ Key{worker.index}')
-
-        data = worker.fetch('TaiwanStockMonthRevenue', code, start)
-        if data:
-            s = sorted(data, key=lambda x:x['date'], reverse=True)
-            with rl:
-                result[code] = [{'date':d['date'],'revenue':float(d['revenue'])} for d in s]
-
-        with cl:
-            cnt['n'] += 1; n = cnt['n']
-        if n % 50 == 0:
-            sm = ', '.join(f'Key{w.index}:{w.count}次{"(✓)" if w.has_quota else "(滿)"}' for w in workers)
-            log.info(f'  月營收進度:{n}/{len(codes)}，{sm}')
-
-    # 按 round-robin 分配給各 Worker
-    per = [[] for _ in range(nk)]
-    for i, c in enumerate(codes):
-        per[i % nk].append(c)
-
-    def run(wk: 'KeyWorker', batch: list) -> None:
-        log.info(f'  Key{wk.index} 啟動，負責 {len(batch)} 支')
-        for c in batch:
-            fetch_with_fallback(c, wk)
-
-    with ThreadPoolExecutor(max_workers=nk) as pool:
-        futs = [pool.submit(run, wk, b) for wk, b in zip(workers, per)]
-        for f in as_completed(futs):
-            try: f.result()
-            except Exception as e: log.warning(f'  Worker異常:{e}')
-
-    sm = ', '.join(f'Key{w.index}:{w.count}次' for w in workers)
-    log.info(f'  月營收完成:{len(result)}/{len(codes)}支 | {sm}')
     return result
 
 avg=lambda lst: sum(lst)/len(lst) if lst else 0.0
@@ -553,9 +578,9 @@ def calc_revenue(rv):
             'revenueHighRecord':lv>=max(allv) or (float(sly['revenue'])<lv if sly else False)}
 
 def main():
-    log.info('=== 台股雷達資料建置 V2.3 開始 ===')
+    log.info('=== 台股雷達資料建置 V3.0 開始 ===')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"}')
-    log.info(f'FinMind Keys:{len(FINMIND_TOKENS)}組 配額:{len(FINMIND_TOKENS)*QUOTA_PER_KEY}次')
+    log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"} bs4:{"✓" if BS4_OK else "✗(regex備援)"}')
     data_date=date_now().strftime('%Y-%m-%d')
 
     log.info('Step 1: TWSE...')
@@ -601,8 +626,8 @@ def main():
             proxy=twse_stock_history('0050',7)
             log.info(f'  0050(TWSE):{len(proxy)}筆')
 
-    log.info('Step 4: 月營收...')
-    rev_all=load_revenue_finmind(all_codes)
+    log.info('Step 4: 月營收（MOPS，免費）...')
+    rev_all = load_revenue_mops(24)
 
     log.info('Step 5: 指標...')
     p0050=sb.get('0050')
@@ -651,8 +676,8 @@ def main():
     log.info('Step 6: 輸出...')
     os.makedirs('data',exist_ok=True)
     tw_now=date_now()
-    out={'version':'V2.3','generated':tw_now.isoformat(),'dataDate':data_date,
-         'source':'yfinance+finmind+twse' if FINMIND_TOKENS else 'yfinance+twse',
+    out={'version':'V3.0','generated':tw_now.isoformat(),'dataDate':data_date,
+         'source':'yfinance+mops+twse',
          'stockCount':len(results),'coverage':{'technical':hrs,'revenue':hrv,'institutional':hfi},
          'marketSummary':mkt,'stocks':results}
     with open(OUTPUT_PATH,'w',encoding='utf-8') as f:
