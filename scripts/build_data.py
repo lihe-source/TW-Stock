@@ -342,7 +342,7 @@ def download_price_history(codes):
     for i in range(0,len(tickers),YFINANCE_CHUNK):
         ct=tickers[i:i+YFINANCE_CHUNK]; cc=codes[i:i+YFINANCE_CHUNK]
         bn=i//YFINANCE_CHUNK+1
-        try: raw=yf.download(ct,period=YFINANCE_PERIOD,auto_adjust=True,progress=False,threads=False)
+        try: raw=yf.download(ct,period=YFINANCE_PERIOD,auto_adjust=False,progress=False,threads=False)
         except Exception as e: log.warning(f'  批次{bn}失敗:{e}'); continue
         if raw is None or (PANDAS_OK and isinstance(raw,pd.DataFrame) and raw.empty): continue
         ok=0
@@ -377,7 +377,7 @@ def download_single(ticker_tw):
     """Fix 1b: flatten MultiIndex before iterrows to prevent Series ambiguous error."""
     if not YF_OK: return []
     try:
-        raw=yf.download(ticker_tw,period=YFINANCE_PERIOD,auto_adjust=True,progress=False,threads=False)
+        raw=yf.download(ticker_tw,period=YFINANCE_PERIOD,auto_adjust=False,progress=False,threads=False)
         if raw is None or (PANDAS_OK and isinstance(raw,pd.DataFrame) and raw.empty): return []
         df = _flatten_df(raw)   # ← flatten so row['Close'] is always scalar
         rows=[r for r in (_row_to_ohlc(row,di.strftime('%Y-%m-%d')) for di,row in df.iterrows()) if r]
@@ -634,7 +634,7 @@ def calc_revenue(rv):
             'revenueHighRecord':lv>=max(allv) or (float(sly['revenue'])<lv if sly else False)}
 
 def main():
-    log.info('=== 台股雷達資料建置 V3.5 開始 ===')
+    log.info('=== 台股雷達資料建置 V3.6 開始 ===')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"}')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"} bs4:{"✓" if BS4_OK else "✗(regex備援)"}')
     data_date=date_now().strftime('%Y-%m-%d')
@@ -715,8 +715,14 @@ def main():
         if not px and not YF_OK: px=twse_stock_history(code,7)
         if px:
             tp=base.get('price',0); th=base.get('high',0); tl=base.get('low',0)
-            if tp>0 and px[0]['date']<data_date:
-                px=[{'date':data_date,'close':tp,'max':th or tp,'min':tl or tp}]+px
+            if tp > 0:
+                # 強制用 TWSE 官方收盤覆蓋 px 最新一筆
+                # 不管 yfinance 是否已有今日資料，TWSE 才是正確來源
+                today_row = {'date':data_date,'close':tp,'max':th or tp,'min':tl or tp}
+                if px[0]['date'] == data_date:
+                    px[0] = today_row   # 覆蓋 yfinance 今日（避免 auto_adjust 還原價）
+                else:
+                    px = [today_row] + px   # 補入今日
             r.update(calc_technical(px,proxy))
             if not r['price']:
                 try: r['price']=float(px[0]['close'])
@@ -733,7 +739,7 @@ def main():
     log.info('Step 6: 輸出...')
     os.makedirs('data',exist_ok=True)
     tw_now=date_now()
-    out={'version':'V3.5','generated':tw_now.isoformat(),'dataDate':data_date,
+    out={'version':'V3.6','generated':tw_now.isoformat(),'dataDate':data_date,
          'source':'yfinance+finmind+twse' if FINMIND_TOKENS else 'yfinance+twse',
          'stockCount':len(results),'coverage':{'technical':hrs,'revenue':hrv,'institutional':hfi},
          'marketSummary':mkt,'stocks':results}
