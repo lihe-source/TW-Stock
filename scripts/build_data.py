@@ -33,9 +33,10 @@ logging.basicConfig(level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger(__name__)
 
-_RAW_TOKENS    = [os.environ.get(k,'').strip() for k in
-                  ('FINMIND_TOKEN','FINMIND_TOKEN_2','FINMIND_TOKEN_3',
-                   'FINMIND_TOKEN_4','FINMIND_TOKEN_5','FINMIND_TOKEN_6')]
+# FinMind Token 自動偵測：支援最多 15 個，有幾個用幾個
+_RAW_TOKENS = [os.environ.get(k,'').strip() for k in
+               ['FINMIND_TOKEN'] +
+               [f'FINMIND_TOKEN_{i}' for i in range(2, 16)]]   # TOKEN_2 ~ TOKEN_15
 FINMIND_TOKENS = [t for t in _RAW_TOKENS if t]
 STOCK_LIMIT    = int(os.environ.get('STOCK_LIMIT','0'))
 
@@ -400,125 +401,146 @@ def twse_stock_history(code,months=7):
     rows.sort(key=lambda x:x['date'],reverse=True)
     return rows
 
-def load_revenue_mops(months: int = 24) -> Dict[str, List[dict]]:
-    """
-    MOPS 月營收 — 完全免費，不需任何 Token。
+class KeyWorker:
+    """每個 FinMind Token 的獨立 Worker Thread，有自己的速率控制。"""
+    def __init__(self, token: str, index: int, limit: int = QUOTA_PER_KEY):
+        self.token    = token
+        self.index    = index
+        self.limit    = limit
+        self.count    = 0
+        self.exceeded = False
+        self._lock    = threading.Lock()
+        self._last    = 0.0
+        self._s       = requests.Session()
+        self._s.headers.update(SESSION.headers)
 
-    每次請求一個月份的 HTML = 所有上市公司的月營收。
-    24 個月只需 24 次請求（原本 FinMind 需要 1072 次）。
+    @property
+    def has_quota(self) -> bool:
+        return not self.exceeded and self.count < self.limit
 
-    URL: https://mops.twse.com.tw/nas/t21/sii/t21sc03_{民國年}_{月:02d}_0.html
-    HTML 表格欄位：公司代號 | 公司名稱 | 當月營收 | 上月營收 | 去年當月 | ...
+    def fetch(self, dataset: str, code: str, start_date: str) -> List[dict]:
+        with self._lock:
+            if self.exceeded:
+                return []
+            wait = FINMIND_SLEEP - (time.monotonic() - self._last)
+            if wait > 0:
+                time.sleep(wait)
 
-    備註：MOPS 曾對 GitHub Actions IP 封鎖，但 nas/ 路徑的靜態 HTML 通常不受限。
-    若連續失敗，自動改用 FinMind 補救（若有 token）。
-    """
-    now      = date_now()
-    result: Dict[str, List[dict]] = {}
-    fetched  = 0
-    failed   = 0
-
-    log.info(f'  MOPS 月營收：抓取最近 {months} 個月...')
-
-    for m in range(months):
-        target    = now - timedelta(days=m * 30)
-        roc_year  = target.year - 1911
-        month     = target.month
-        iso_date  = f'{target.year}-{month:02d}-01'
-
-        # 當月資料通常次月 10 日才公告，跳過可能尚未發布的月份
-        if m == 0 and now.day < 12:
-            log.debug(f'  跳過 {target.year}/{month:02d}（當月尚未公告）')
-            continue
-
-        url = MOPS_REV_SII.format(roc=roc_year, month=month)
+        params = {'dataset': dataset, 'data_id': code,
+                  'start_date': start_date, 'token': self.token}
         try:
-            r = SESSION.get(url, timeout=30)
+            r = self._s.get(FINMIND_BASE, params=params, timeout=25)
+            with self._lock:
+                self._last = time.monotonic()
+
+            if r.status_code == 402:
+                with self._lock:
+                    if not self.exceeded:
+                        self.exceeded = True
+                        log.warning(f'  Key{self.index} 402 配額耗盡（{self.count}次）')
+                return []
+            if r.status_code in (422, 429):
+                return []
             r.raise_for_status()
 
-            # 解碼 HTML（MOPS 可能是 big5 或 utf-8）
-            for enc in (r.apparent_encoding, 'big5', 'utf-8', 'cp950'):
-                try:
-                    html = r.content.decode(enc or 'big5', errors='replace')
-                    break
-                except Exception:
-                    html = r.text
+            content = r.content.strip()
+            if not content or content[:1] in (b'<', b'\n'):
+                return []
 
-            parsed = _parse_mops_revenue(html)
-            if not parsed:
-                log.debug(f'  MOPS {target.year}/{month:02d}: 解析 0 筆')
-                failed += 1
-                if failed >= 3:
-                    log.warning('  MOPS 連續失敗 3 次，可能被封鎖，停止嘗試')
-                    break
-                continue
+            j = r.json()
+            if j.get('status') != 200:
+                msg = j.get('msg', '')
+                if any(k in msg for k in ('quota', '次數', '超過', 'limit')):
+                    with self._lock:
+                        self.exceeded = True
+                        log.warning(f'  Key{self.index} 配額耗盡（msg）')
+                return []
 
-            for code, rev in parsed.items():
-                result.setdefault(code, []).append({'date': iso_date, 'revenue': rev})
-
-            fetched += 1
-            failed  = 0   # 成功則重設連續失敗計數
-            log.info(f'  MOPS {target.year}/{month:02d}: {len(parsed)} 筆')
-            time.sleep(1.5)   # MOPS 禮貌等待
+            with self._lock:
+                self.count += 1
+                if self.count >= self.limit:
+                    self.exceeded = True
+                    log.info(f'  Key{self.index} 達上限 {self.limit} 次')
+            return j.get('data', [])
 
         except Exception as e:
-            log.warning(f'  MOPS {roc_year}/{month:02d} 失敗: {e}')
-            failed += 1
-            if failed >= 3:
-                log.warning('  MOPS 連續失敗，停止')
-                break
-
-    # 每支公司按日期降序排列
-    for code in result:
-        result[code].sort(key=lambda x: x['date'], reverse=True)
-
-    log.info(f'  MOPS 月營收完成：{fetched} 個月，{len(result)} 支公司')
-    return result
+            log.debug(f'  Key{self.index} {code}: {e}')
+            return []
 
 
-def _parse_mops_revenue(html: str) -> Dict[str, float]:
+def load_revenue_finmind(codes: List[str]) -> Dict[str, List[dict]]:
     """
-    解析 MOPS 月營收 HTML，回傳 {code: revenue_float}。
-    優先用 BeautifulSoup，備援用 regex。
+    FinMind 月營收 — 並發多 Key，自動偵測可用 Key 數量。
+
+    設計：
+      - 自動偵測 FINMIND_TOKEN ~ FINMIND_TOKEN_15，有幾個用幾個
+      - 每個 Key 一個 Thread，真正並發
+      - Key 配額耗盡後自動轉移給其他有額度的 Key
+      - 15 Keys × ~100次 = ~1500次，足夠覆蓋 1072 支
+
+    無 Token → 月營收全部顯示 N/A
     """
-    result: Dict[str, float] = {}
+    if not FINMIND_TOKENS:
+        log.info('  無 FinMind Token，月營收顯示 N/A')
+        return {}
 
-    if BS4_OK:
-        try:
-            soup = BeautifulSoup(html, 'lxml')
-            for row in soup.find_all('tr'):
-                cells = row.find_all('td')
-                if len(cells) < 3:
-                    continue
-                code = cells[0].get_text(strip=True)
-                if not is_equity(code):
-                    continue
-                rev_str = cells[2].get_text(strip=True).replace(',', '').replace(' ', '')
-                try:
-                    rev = float(rev_str)
-                    if rev > 0:
-                        result[code] = rev
-                except ValueError:
-                    pass
-            if result:
-                return result
-        except Exception:
-            pass
+    start   = date_ago_s(24)
+    workers = [KeyWorker(t, i+1) for i, t in enumerate(FINMIND_TOKENS)]
+    nk      = len(workers)
+    total_quota = nk * QUOTA_PER_KEY
 
-    # Regex 備援
-    pattern = (r'<td[^>]*>\s*([1-9]\d{3})\s*</td>'
-               r'\s*<td[^>]*>[^<]*</td>'
-               r'\s*<td[^>]*>\s*([\d,]+)\s*</td>')
-    for m in re.finditer(pattern, html, re.IGNORECASE | re.DOTALL):
-        code    = m.group(1).strip()
-        rev_str = m.group(2).replace(',', '')
-        try:
-            rev = float(rev_str)
-            if rev > 0:
-                result[code] = rev
-        except ValueError:
-            pass
+    log.info(f'  FinMind 月營收: {len(codes)} 支')
+    log.info(f'  偵測到 {nk} 個 Key（Keys: {", ".join(f"Key{w.index}" for w in workers)}）')
+    log.info(f'  配額估算: {nk} × {QUOTA_PER_KEY} = {total_quota} 次'
+             f'（{"✅ 足夠覆蓋" if total_quota >= len(codes) else f"⚠ 不足，覆蓋約 {total_quota}/{len(codes)} 支"}）')
 
+    result      : Dict[str, List[dict]] = {}
+    result_lock = threading.Lock()
+    counter     = {'done': 0}
+    counter_lock= threading.Lock()
+
+    def fetch_one(code: str, preferred: KeyWorker) -> None:
+        # 優先用 preferred worker，耗盡則找其他有額度的 Key
+        worker = preferred if preferred.has_quota else \
+                 next((w for w in workers if w.has_quota), None)
+        if worker is None:
+            return
+
+        data = worker.fetch('TaiwanStockMonthRevenue', code, start)
+        if data:
+            s = sorted(data, key=lambda x: x['date'], reverse=True)
+            with result_lock:
+                result[code] = [{'date': d['date'],
+                                  'revenue': float(d['revenue'])} for d in s]
+
+        with counter_lock:
+            counter['done'] += 1
+            n = counter['done']
+        if n % 100 == 0:
+            sm = ', '.join(f'Key{w.index}:{w.count}次{"✓" if w.has_quota else "滿"}' for w in workers)
+            log.info(f'  月營收進度: {n}/{len(codes)}，{sm}')
+
+    # Round-robin 分配到各 Worker
+    per_worker = [[] for _ in range(nk)]
+    for i, code in enumerate(codes):
+        per_worker[i % nk].append(code)
+
+    def run(wk: KeyWorker, batch: List[str]) -> None:
+        log.info(f'  Key{wk.index} 啟動，負責 {len(batch)} 支')
+        for c in batch:
+            fetch_one(c, wk)
+
+    with ThreadPoolExecutor(max_workers=nk) as pool:
+        futs = [pool.submit(run, wk, b)
+                for wk, b in zip(workers, per_worker)]
+        for f in as_completed(futs):
+            try:
+                f.result()
+            except Exception as e:
+                log.warning(f'  Worker 異常: {e}')
+
+    sm = ', '.join(f'Key{w.index}:{w.count}次' for w in workers)
+    log.info(f'  月營收完成: {len(result)}/{len(codes)} 支 | {sm}')
     return result
 
 avg=lambda lst: sum(lst)/len(lst) if lst else 0.0
@@ -578,7 +600,7 @@ def calc_revenue(rv):
             'revenueHighRecord':lv>=max(allv) or (float(sly['revenue'])<lv if sly else False)}
 
 def main():
-    log.info('=== 台股雷達資料建置 V3.0 開始 ===')
+    log.info('=== 台股雷達資料建置 V3.2 開始 ===')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"}')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"} bs4:{"✓" if BS4_OK else "✗(regex備援)"}')
     data_date=date_now().strftime('%Y-%m-%d')
@@ -626,8 +648,8 @@ def main():
             proxy=twse_stock_history('0050',7)
             log.info(f'  0050(TWSE):{len(proxy)}筆')
 
-    log.info('Step 4: 月營收（MOPS，免費）...')
-    rev_all = load_revenue_mops(24)
+    log.info('Step 4: 月營收（FinMind）...')
+    rev_all = load_revenue_finmind(all_codes)
 
     log.info('Step 5: 指標...')
     p0050=sb.get('0050')
@@ -676,8 +698,8 @@ def main():
     log.info('Step 6: 輸出...')
     os.makedirs('data',exist_ok=True)
     tw_now=date_now()
-    out={'version':'V3.0','generated':tw_now.isoformat(),'dataDate':data_date,
-         'source':'yfinance+mops+twse',
+    out={'version':'V3.2','generated':tw_now.isoformat(),'dataDate':data_date,
+         'source':'yfinance+finmind+twse' if FINMIND_TOKENS else 'yfinance+twse',
          'stockCount':len(results),'coverage':{'technical':hrs,'revenue':hrv,'institutional':hfi},
          'marketSummary':mkt,'stocks':results}
     with open(OUTPUT_PATH,'w',encoding='utf-8') as f:
