@@ -96,8 +96,13 @@ date_now   = lambda: datetime.now(TW_TZ)
 date_ago_s = lambda m: (date_now()-timedelta(days=m*30)).strftime('%Y-%m-%d')
 
 def _parse_twse_stock(s: dict) -> tuple:
-    """Parse one TWSE stock record → (code, data_dict) or (None, None)"""
-    code = (s.get('Code') or s.get('代號') or '').strip()
+    """
+    Parse one TWSE stock record → (code, data_dict) or (None, None)
+    支援兩種格式：
+      OpenAPI: Code, ClosingPrice, Change, HighestPrice, LowestPrice, Name
+      rwd 盤後: 證券代號, 收盤價, 漲跌價差, 最高價, 最低價, 證券名稱
+    """
+    code = (s.get('Code') or s.get('證券代號') or s.get('代號') or '').strip()
     if not is_equity(code): return None, None
     price_s = (s.get('ClosingPrice') or s.get('收盤價') or '').replace(',','').strip()
     try:
@@ -107,14 +112,19 @@ def _parse_twse_stock(s: dict) -> tuple:
     if price <= 0: return None, None
     vol_s = (s.get('TradeVolume') or s.get('成交股數') or '0').replace(',','')
     vol = float(vol_s) if vol_s.replace('.','').isdigit() else 0
-    cr  = str(s.get('Change') or s.get('漲跌價差') or '0').strip()
-    ca  = float(re.sub(r'[▲▼+\-\s,]','',cr) or '0')
-    chg = -ca if (cr.startswith('▼') or cr.startswith('-')) else ca
+    # 漲跌：rwd 用「漲跌(+/-)」欄位存符號、「漲跌價差」存數值
+    sign_s = str(s.get('漲跌(+/-)') or '').strip()
+    cr     = str(s.get('Change') or s.get('漲跌價差') or '0').strip()
+    ca     = float(re.sub(r'[▲▼+\-\s,]','',cr) or '0')
+    # rwd 格式：sign_s = '-' 或 '+' 或空字串
+    is_neg = (sign_s == '-') or cr.startswith('▼') or cr.startswith('-')
+    chg    = -ca if is_neg else ca
     b   = (price - chg) or price
     pct = round(chg / b * 100, 2) if b else 0.0
     hi  = float((s.get('HighestPrice') or s.get('最高價') or str(price)).replace(',',''))
     lo  = float((s.get('LowestPrice')  or s.get('最低價') or str(price)).replace(',',''))
-    return code, {'code':code,'name':(s.get('Name') or s.get('名稱') or code).strip(),
+    name = (s.get('Name') or s.get('證券名稱') or s.get('名稱') or code).strip()
+    return code, {'code':code,'name':name,
                   'price':price,'change':round(chg,2),'pct':pct,
                   'high':hi,'low':lo,'vol':vol}
 
@@ -172,12 +182,17 @@ def load_twse_day_all():
         try:
             raw = safe_get_json(url)
             if not raw:
+                log.warning(f'  TSE ({label}): 無回應')
                 continue
             # rwd 版本回傳 {stat, date, fields, data}
             if isinstance(raw, dict):
-                data_date_twse = raw.get('date','')
+                stat = raw.get('stat','')
+                if stat not in ('OK','ok',''):
+                    log.warning(f'  TSE ({label}): stat={stat}，跳過')
+                    continue
                 records = []
                 fields  = raw.get('fields', [])
+                log.info(f'  TSE ({label}) fields: {fields[:5]}...')  # debug 欄位名稱
                 for row in raw.get('data', []):
                     if isinstance(row, list) and fields:
                         records.append(dict(zip(fields, row)))
@@ -196,7 +211,7 @@ def load_twse_day_all():
             if ok > 100:
                 break   # 成功取到足夠資料，不需嘗試備援
         except Exception as e:
-            log.debug(f'  TSE {label}: {e}')
+            log.warning(f'  TSE ({label}) 失敗: {e}')
 
     # ── 上櫃 TPEX ──
     otc_codes: set = set()   # 記錄哪些是上櫃股票（yfinance 要用 .TWO）
@@ -804,7 +819,7 @@ def self_check_price(results: list, sb: dict) -> bool:
 
 
 def main():
-    log.info('=== 台股雷達資料建置 V3.75 開始 ===')
+    log.info('=== 台股雷達資料建置 V3.76 開始 ===')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"} bs4:{"✓" if BS4_OK else "✗(regex備援)"}')
     data_date=date_now().strftime('%Y-%m-%d')
 
@@ -911,7 +926,7 @@ def main():
     log.info('Step 7: 輸出...')
     os.makedirs('data',exist_ok=True)
     tw_now=date_now()
-    out={'version':'V3.75','generated':tw_now.isoformat(),'dataDate':data_date,
+    out={'version':'V3.76','generated':tw_now.isoformat(),'dataDate':data_date,
          'source':'yfinance+finmind+twse' if FINMIND_TOKENS else 'yfinance+twse',
          'stockCount':len(results),'coverage':{'technical':hrs,'revenue':hrv,'institutional':hfi},
          'marketSummary':mkt,'stocks':results}
