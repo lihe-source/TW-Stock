@@ -8,7 +8,7 @@
  *  - 右上角顯示 screener.json 的實際資料日期
  */
 
-const APP_VERSION = 'V3.79';
+const APP_VERSION = 'V3.80';
 
 const CFG = {
   SCREENER_JSON: './data/screener.json',  // 預計算資料
@@ -17,7 +17,7 @@ const CFG = {
 
 /* ── State ── */
 let state = {
-  theme:     localStorage.getItem('theme') || 'dark',
+  theme:     localStorage.getItem('theme') || 'light',
   watchlist: JSON.parse(localStorage.getItem('watchlist') || '{"預設":{"stocks":[]}}'),
   page:      'screen',
   allStocks: [],        // 從 screener.json 載入
@@ -84,7 +84,7 @@ function applyFilters(stocks) {
   if (af.length === 0) return stocks;
 
   const FIELD_MAP = {
-    rs90:              s => s.rsScore != null ? s.rsScore >= 90 : null,
+    rs90:              s => { const t=parseInt(document.getElementById('rsThreshold')?.value||'90'); return s.rsScore != null ? s.rsScore >= t : null; },
     nearMonthlyHigh:   s => s.distanceFromHigh != null ? s.distanceFromHigh >= -5 : null,
     shortMAAlign:      s => s.shortMAAlign,
     longMAAlign:       s => s.longMAAlign,
@@ -154,15 +154,16 @@ const UI = {
     document.getElementById('versionBadge').textContent = APP_VERSION;
     const dEl=document.getElementById('dataDate'), tEl=document.getElementById('fetchTime');
     if(state.dataDate){
-      dEl.textContent=`資料 ${fmtD(state.dataDate)}`;
+      const closeTw = new Date(state.dataDate + 'T14:30:00+08:00');
+      dEl.textContent=`收盤 ${fmtD(state.dataDate)} 14:30`;
       dEl.classList.add('has-data');
     } else {
-      dEl.textContent='資料 --/--/--';
+      dEl.textContent='收盤 --/--/--';
       dEl.classList.remove('has-data');
     }
     if(state.generated){
       const d=new Date(state.generated);
-      tEl.textContent=`更新 ${fmtDT(d)}`;
+      tEl.textContent=`整理 ${fmtDT(d)}`;
     } else {
       tEl.textContent='尚未載入';
     }
@@ -248,11 +249,9 @@ const UI = {
           <thead>
             <tr>
               <th rowspan="2">代號</th><th rowspan="2">股名</th>
-              <th rowspan="2">現價</th><th rowspan="2">漲跌%</th>
-              <th colspan="5" style="color:#4FC3F7;border-bottom:1px solid rgba(79,195,247,.2)">📊 技術面</th>
+              <th rowspan="2">現價</th><th rowspan="2">漲跌%</th>              <th colspan="5" style="color:#4FC3F7;border-bottom:1px solid rgba(79,195,247,.2)">📊 技術面</th>
               <th colspan="6" style="color:#81C784;border-bottom:1px solid rgba(129,199,132,.2)">📈 基本面</th>
               <th colspan="3" style="color:#FFB74D;border-bottom:1px solid rgba(255,183,77,.2)">🎯 籌碼面</th>
-              <th rowspan="2">自選</th>
             </tr>
             <tr>
               <th style="color:#4FC3F7">RS<small style="display:block;opacity:.6;font-size:9px;font-weight:400">0-99分</small></th>
@@ -293,9 +292,15 @@ const UI = {
     const pc=(r.pct||0)>=0?'pct-positive':'pct-negative';
     const pd=r.pct!=null?`${r.pct>=0?'+':''}${r.pct.toFixed(2)}%`:'--';
     const starred=WL.isWatched(r.code);
-    return`<tr>
+    return`<tr id="row-${r.code}" onclick="UI.showDetail('${r.code}')">
       <td><span class="stock-code">${r.code}</span></td>
-      <td><span class="stock-name">${r.name}</span></td>
+      <td>
+        <span class="watch-star ${starred?'starred':''}"
+          onclick="event.stopPropagation();UI.starToggle('${r.code}','${(r.name||'').replace(/'/g,"\\'")}')">
+          ${starred?'★':'☆'}
+        </span>
+        <span class="stock-name">${r.name}</span>
+      </td>
       <td class="price-cell ${r.price?pc:''}">${r.price?n2(r.price):'--'}</td>
       <td class="${r.price?pc:''} num-cell">${r.price?pd:'--'}</td>
       <td>${this._rsCell(r.rsScore)}</td>
@@ -312,13 +317,18 @@ const UI = {
       <td>${this._numPill(r.foreignNet5d!=null?Math.round(r.foreignNet5d/1000):r.foreignNet!=null?Math.round(r.foreignNet/1000):null,'張')}</td>
       <td>${this._numPill(r.trustNet5d!=null?Math.round(r.trustNet5d/1000):r.trustNet!=null?Math.round(r.trustNet/1000):null,'張')}</td>
       <td>${this._pill(r.bigHolderIncrease,'增加','減少')}</td>
-      <td>
-        <span class="watch-star ${starred?'starred':''}"
-          onclick="event.stopPropagation();UI.openWatchModal('${r.code}','${(r.name||'').replace(/'/g,"\\'")}')">
-          ${starred?'★':'☆'}
-        </span>
-      </td>
     </tr>`;
+  },
+
+  /* Star toggle: starred → remove directly, unstarred → open modal to pick category */
+  starToggle(code, name){
+    if(WL.isWatched(code)){
+      WL.removeAll(code);
+      this.toast(`${code} 已移除自選股`,'info');
+      this._refreshStar(code);
+    } else {
+      this.openWatchModal(code, name);
+    }
   },
 
   /* Watchlist modal */
@@ -510,6 +520,14 @@ function init(){
     UI.updateHeader();
     UI.updateScopeBanner();
   }).catch(()=>{ UI.updateScopeBanner(); });
+}
+
+function applyRsThreshold(val){
+  const t = parseInt(val||'90');
+  const lbl = document.getElementById('rsThreshold');
+  if(lbl) lbl.value = val;
+  // Update active tag label if rs90 is checked
+  UI.renderTags();
 }
 
 document.addEventListener('DOMContentLoaded', init);

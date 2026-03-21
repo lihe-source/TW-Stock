@@ -37,7 +37,7 @@
         <span class="data-date-label" id="dataDate">資料 --/--/--</span>
         <span class="data-fetch-time" id="fetchTime">尚未查詢</span>
       </div>
-      <span class="version-badge" id="versionBadge">V3.79</span>
+      <span class="version-badge" id="versionBadge">V3.80</span>
       <button class="theme-btn" id="themeBtn" title="切換深色/淺色">🌙</button>
     </div>
   </header>
@@ -75,9 +75,15 @@
             <span class="cat-toggle">▾</span>
           </div>
           <div class="filter-body">
-            <label class="filter-item">
+            <label class="filter-item" style="grid-column:1/-1">
               <input type="checkbox" id="filter-rs90" class="filter-checkbox" data-filter="rs90" data-cat="tech">
-              <span class="filter-label">RS 指標大於 90<small>RSI(14) 映射 0~99 評分</small></span>
+              <span class="filter-label">RS 指標強勢
+                <small>RS ≥ <select id="rsThreshold" onclick="event.stopPropagation()" onchange="applyRsThreshold(this.value)" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:1px 4px;font-size:11px">
+                  <option value="70">70</option>
+                  <option value="80">80</option>
+                  <option value="90" selected>90</option>
+                </select>（0-99分）</small>
+              </span>
             </label>
             <label class="filter-item">
               <input type="checkbox" id="filter-nearMonthlyHigh" class="filter-checkbox" data-filter="nearMonthlyHigh" data-cat="tech">
@@ -234,9 +240,9 @@
           <div class="settings-section-title">🚀 關於</div>
           <div class="settings-row">
             <div class="settings-desc" style="line-height:1.9">
-              版本：<strong>V3.79</strong><br>
+              版本：<strong>V3.80</strong><br>
               部署：GitHub Pages（靜態 PWA）<br>
-              資料更新：GitHub Actions（每日 14:30）<br>
+              資料更新：GitHub Actions（每日 15:30 (UTC 07:30)）<br>
               篩選引擎：瀏覽器端 JS（無 API 呼叫，瞬間完成）<br><br>
               📌 本工具僅供參考，不構成投資建議。
             </div>

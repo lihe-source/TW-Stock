@@ -25,8 +25,8 @@
   --gold:          #F5C843;
   --gold-dim:      rgba(245,200,67,0.12);
 
-  --positive:      #00D4AA;
-  --negative:      #FF4757;
+  --positive:      #FF4757;
+  --negative:      #00C48C;
   --neutral:       #7A8FA8;
   --warning:       #FFB74D;
 
@@ -63,8 +63,8 @@
   --gold:          #B8860B;
   --gold-dim:      rgba(184,134,11,0.08);
 
-  --positive:      #00875A;
-  --negative:      #CC2936;
+  --positive:      #CC2936;
+  --negative:      #007A4C;
   --neutral:       #5A6B80;
   --warning:       #B87333;
 
