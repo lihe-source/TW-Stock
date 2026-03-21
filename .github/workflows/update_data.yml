@@ -1,1 +1,80 @@
+name: 每日更新台股資料
 
+on:
+  schedule:
+    - cron: '30 7 * * 1-5'   # 台灣時間 15:30
+  workflow_dispatch:
+    inputs:
+      stock_limit:
+        description: '限制股票數（0=全部，50=測試用）'
+        required: false
+        default: '0'
+
+jobs:
+  build-data:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests yfinance pandas beautifulsoup4 lxml
+
+      - name: Build screener data
+        env:
+          # FinMind Token 自動偵測：設定幾個就用幾個（最多支援 15 個）
+          # 每個 Key 約 100 次/日
+          # 覆蓋 1072 支需要 11 個 Key（11 × 100 = 1100 次）
+          # 建議申請 12~15 個以保留緩衝
+          # 申請方式：用不同 Email 在 finmindtrade.com 免費註冊
+          FINMIND_TOKEN:    ${{ secrets.FINMIND_TOKEN }}
+          FINMIND_TOKEN_2:  ${{ secrets.FINMIND_TOKEN_2 }}
+          FINMIND_TOKEN_3:  ${{ secrets.FINMIND_TOKEN_3 }}
+          FINMIND_TOKEN_4:  ${{ secrets.FINMIND_TOKEN_4 }}
+          FINMIND_TOKEN_5:  ${{ secrets.FINMIND_TOKEN_5 }}
+          FINMIND_TOKEN_6:  ${{ secrets.FINMIND_TOKEN_6 }}
+          FINMIND_TOKEN_7:  ${{ secrets.FINMIND_TOKEN_7 }}
+          FINMIND_TOKEN_8:  ${{ secrets.FINMIND_TOKEN_8 }}
+          FINMIND_TOKEN_9:  ${{ secrets.FINMIND_TOKEN_9 }}
+          FINMIND_TOKEN_10: ${{ secrets.FINMIND_TOKEN_10 }}
+          FINMIND_TOKEN_11: ${{ secrets.FINMIND_TOKEN_11 }}
+          FINMIND_TOKEN_12: ${{ secrets.FINMIND_TOKEN_12 }}
+          FINMIND_TOKEN_13: ${{ secrets.FINMIND_TOKEN_13 }}
+          FINMIND_TOKEN_14: ${{ secrets.FINMIND_TOKEN_14 }}
+          FINMIND_TOKEN_15: ${{ secrets.FINMIND_TOKEN_15 }}
+          STOCK_LIMIT: ${{ github.event.inputs.stock_limit || '0' }}
+        run: python3 scripts/build_data.py
+
+      - name: Validate output
+        run: |
+          python3 -c "
+          import json, sys
+          d = json.load(open('data/screener.json'))
+          n   = d['stockCount']
+          c   = d.get('coverage', {})
+          rev = c.get('revenue', 0)
+          print(f'stockCount : {n}')
+          print(f'dataDate   : {d[\"dataDate\"]}')
+          print(f'source     : {d[\"source\"]}')
+          print(f'RS覆蓋     : {c.get(\"technical\",0)}/{n}')
+          print(f'月營收覆蓋 : {rev}/{n} ({rev/n*100:.1f}%)')
+          if n == 0: print('ERROR: no stocks!'); sys.exit(1)
+          "
+
+      - name: Commit & push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/screener.json
+          git diff --staged --quiet \
+            && echo "資料無變更" \
+            || git commit -m "data: 更新台股資料 $(TZ='Asia/Taipei' date +'%Y-%m-%d %H:%M')"
+          git push
