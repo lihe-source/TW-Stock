@@ -275,8 +275,8 @@ def _parse_t86_response(raw) -> dict:
                         try: return float(str(v).replace(',',''))
                         except: pass
                 return 0.0
-            fgn = fv('Foreign_Investor_Net_Buy_or_Sell','外陸資買賣超股數(不含外資自營商)','外資買賣超') * 1000
-            tst = fv('Investment_Trust_Net_Buy_or_Sell','投信買賣超股數','投信買賣超') * 1000
+            fgn = fv('Foreign_Investor_Net_Buy_or_Sell','外陸資買賣超股數(不含外資自營商)','外資買賣超')
+            tst = fv('Investment_Trust_Net_Buy_or_Sell','投信買賣超股數','投信買賣超')
             inst[code] = {'foreignNet':round(fgn),'trustNet':round(tst),
                           'foreignBuy':fgn>0,'trustBuy':tst>0}
         return inst
@@ -317,8 +317,8 @@ def _parse_t86_response(raw) -> dict:
                     if col < 0 or col >= len(row): return 0.0
                     s = str(row[col]).replace(',','').replace('+','').strip()
                     return float(s) if s and s not in ('--','-','') else 0.0
-                fgn = pv(fgn_col) * 1000
-                tst = pv(trust_col) * 1000
+                fgn = pv(fgn_col)
+                tst = pv(trust_col)
                 inst[code] = {'foreignNet':round(fgn),'trustNet':round(tst),
                               'foreignBuy':fgn>0,'trustBuy':tst>0}
             except Exception:
@@ -346,8 +346,8 @@ def load_tpex_inst_today() -> dict:
                         try: return float(str(v).replace(',', ''))
                         except: pass
                 return 0.0
-            fgn   = fv('ForeignInvestmentNetBuySell', '外資及陸資買賣超股數', '外資買賣超') * 1000
-            trust = fv('InvestmentTrustNetBuySell', '投信買賣超股數', '投信買賣超') * 1000
+            fgn   = fv('ForeignInvestmentNetBuySell', '外資及陸資買賣超股數', '外資買賣超')
+            trust = fv('InvestmentTrustNetBuySell', '投信買賣超股數', '投信買賣超')
             inst[code] = {
                 'foreignNet': round(fgn), 'trustNet': round(trust),
                 'foreignBuy': fgn > 0,   'trustBuy': trust > 0,
@@ -514,8 +514,8 @@ def load_t86_historical(days: int = 10) -> dict:
                             try: return float(str(v).replace(',',''))
                             except: pass
                     return 0.0
-                fgn   = fv2('ForeignInvestmentNetBuySell','外資及陸資買賣超股數','外資買賣超') * 1000
-                trust = fv2('InvestmentTrustNetBuySell','投信買賣超股數','投信買賣超') * 1000
+                fgn   = fv2('ForeignInvestmentNetBuySell','外資及陸資買賣超股數','外資買賣超')
+                trust = fv2('InvestmentTrustNetBuySell','投信買賣超股數','投信買賣超')
                 if code not in daily:
                     daily[code] = {'f':[], 't':[]}
                 daily[code]['f'].append(fgn)
@@ -1061,7 +1061,7 @@ def self_check_price(results: list, sb: dict) -> bool:
 
 
 def main():
-    log.info('=== 台股雷達資料建置 V3.82 開始 ===')
+    log.info('=== 台股雷達資料建置 V3.83 開始 ===')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"} bs4:{"✓" if BS4_OK else "✗(regex備援)"}')
     data_date=date_now().strftime('%Y-%m-%d')
 
@@ -1178,7 +1178,7 @@ def main():
     log.info('Step 7: 輸出...')
     os.makedirs('data',exist_ok=True)
     tw_now=date_now()
-    out={'version':'V3.82','generated':tw_now.isoformat(),'dataDate':data_date,
+    out={'version':'V3.83','generated':tw_now.isoformat(),'dataDate':data_date,
          'source':'yfinance+finmind+twse' if FINMIND_TOKENS else 'yfinance+twse',
          'stockCount':len(results),'coverage':{'technical':hrs,'revenue':hrv,'institutional':hfi},
          'marketSummary':mkt,'stocks':results}
