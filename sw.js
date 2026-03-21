@@ -1,4 +1,4 @@
-const CACHE_NAME = 'taiwan-stock-radar-v3.82';
+const CACHE_NAME = 'taiwan-stock-radar-v3.83';
 const STATIC_ASSETS = [
   './',
   './index.html',
