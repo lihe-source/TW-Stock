@@ -1024,7 +1024,7 @@ def self_check_price(results: list, sb: dict) -> bool:
 
 
 def main():
-    log.info('=== 台股雷達資料建置 V3.79 開始 ===')
+    log.info('=== 台股雷達資料建置 V3.80 開始 ===')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"} bs4:{"✓" if BS4_OK else "✗(regex備援)"}')
     data_date=date_now().strftime('%Y-%m-%d')
 
@@ -1141,7 +1141,7 @@ def main():
     log.info('Step 7: 輸出...')
     os.makedirs('data',exist_ok=True)
     tw_now=date_now()
-    out={'version':'V3.79','generated':tw_now.isoformat(),'dataDate':data_date,
+    out={'version':'V3.80','generated':tw_now.isoformat(),'dataDate':data_date,
          'source':'yfinance+finmind+twse' if FINMIND_TOKENS else 'yfinance+twse',
          'stockCount':len(results),'coverage':{'technical':hrs,'revenue':hrv,'institutional':hfi},
          'marketSummary':mkt,'stocks':results}
