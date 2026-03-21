@@ -8,7 +8,7 @@
  *  - 右上角顯示 screener.json 的實際資料日期
  */
 
-const APP_VERSION = 'V3.78';
+const APP_VERSION = 'V3.79';
 
 const CFG = {
   SCREENER_JSON: './data/screener.json',  // 預計算資料
@@ -225,7 +225,7 @@ const UI = {
       return;
     }
 
-    const LABELS={rs90:'RS>90',nearMonthlyHigh:'距月高≤5%',shortMAAlign:'短均排列',longMAAlign:'中長均排列',aboveSubPoint:'站上MA5扣抵',revenueHighRecord:'營收創高',revenueYoY:'YoY連2月>20%',revenueMoM:'MoM連2月>20%',marginGrowth:'毛/營益率↑',noProfitLoss:'無虧損',chipConcentration:'籌碼集中↑',buyerSellerDiff:'買賣家數差<0',foreignBuy:'外資5日買超',trustBuy:'投信5日買超',bigHolderIncrease:'大戶比例↑',institutionalRecord:'法人持股季高'};
+    const LABELS={rs90:'RS > 90',nearMonthlyHigh:'距月高≤5%',shortMAAlign:'短均排列',longMAAlign:'中長均排列',aboveSubPoint:'站上MA5扣抵',revenueHighRecord:'營收創高',revenueYoY:'YoY連2月>20%',revenueMoM:'MoM連2月>20%',marginGrowth:'毛/營益率↑',noProfitLoss:'無虧損',chipConcentration:'籌碼集中↑',buyerSellerDiff:'買賣家數差<0',foreignBuy:'外資5日買超',trustBuy:'投信5日買超',bigHolderIncrease:'大戶比例↑',institutionalRecord:'法人持股季高'};
     const filterBar = af.length===0
       ? ''
       : `<div class="results-filter-bar">${af.map(f=>`<span class="filter-tag" style="font-size:10px;padding:2px 7px">${LABELS[f]||f}</span>`).join('')}</div>`;
@@ -255,7 +255,7 @@ const UI = {
               <th rowspan="2">自選</th>
             </tr>
             <tr>
-              <th style="color:#4FC3F7">RS<small style="display:block;opacity:.6;font-size:8px;font-weight:400">0-99分</small></th>
+              <th style="color:#4FC3F7">RS<small style="display:block;opacity:.6;font-size:9px;font-weight:400">0-99分</small></th>
               <th style="color:#4FC3F7">距月高<small style="display:block;opacity:.6;font-size:8px;font-weight:400">%</small></th>
               <th style="color:#4FC3F7">短均<small style="display:block;opacity:.6;font-size:8px;font-weight:400">5>10>20</small></th>
               <th style="color:#4FC3F7">中長均<small style="display:block;opacity:.6;font-size:8px;font-weight:400">20>60>120</small></th>
