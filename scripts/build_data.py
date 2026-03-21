@@ -5,7 +5,7 @@ Fix 2: log every 50  Fix 3: today data  Fix 4: marketSummary
 """
 import json, os, re, time, logging, tempfile, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, time
 from typing import Optional, Dict, List, Tuple, Any
 import requests
 
@@ -107,6 +107,8 @@ def _parse_twse_stock(s: dict) -> tuple:
     code = (s.get('Code') or s.get('證券代號') or s.get('代號') or '').strip()
     if not is_equity(code): return None, None
     price_s = (s.get('ClosingPrice') or s.get('收盤價') or '').replace(',','').strip()
+    # 清除 TWSE 停牌/暫停交易標記：'X0.00', '--', '---' 等非數字格式
+    price_s = re.sub(r'^[^0-9\.\-]+', '', price_s)  # 移除開頭非數字字元（如 'X'）
     try:
         price = float(price_s)
     except ValueError:
@@ -123,8 +125,13 @@ def _parse_twse_stock(s: dict) -> tuple:
     chg    = -ca if is_neg else ca
     b   = (price - chg) or price
     pct = round(chg / b * 100, 2) if b else 0.0
-    hi  = float((s.get('HighestPrice') or s.get('最高價') or str(price)).replace(',',''))
-    lo  = float((s.get('LowestPrice')  or s.get('最低價') or str(price)).replace(',',''))
+    def safe_float(val, default):
+        s = str(val or '').replace(',','').strip()
+        s = re.sub(r'^[^0-9\.\-]+', '', s)
+        try: return float(s)
+        except: return default
+    hi  = safe_float(s.get('HighestPrice') or s.get('最高價'), price)
+    lo  = safe_float(s.get('LowestPrice')  or s.get('最低價'), price)
     name = (s.get('Name') or s.get('證券名稱') or s.get('名稱') or code).strip()
     return code, {'code':code,'name':name,
                   'price':price,'change':round(chg,2),'pct':pct,
@@ -390,7 +397,37 @@ def load_t86() -> dict:
             log.debug(f'  T86 OpenAPI: {e}')
 
     if not inst:
-        log.warning('  T86 今日: 無資料，嘗試使用昨日資料替代')
+        # 判斷現在是否為交易時段（09:00~14:30 台灣時間）
+        now_tw = date_now()
+        is_trading_hours = (now_tw.weekday() < 5 and
+                            time(9, 0) <= now_tw.time() <= time(14, 35))
+        if is_trading_hours:
+            log.warning('  T86 今日: 交易時段內無資料，可能尚未更新')
+        else:
+            log.info('  T86 今日: 盤後資料尚未就緒，自動使用昨日資料補用')
+
+        # 自動用昨日資料補用
+        for delta in range(1, 5):
+            d = now_tw - timedelta(days=delta)
+            if d.weekday() >= 5:
+                continue
+            ds = d.strftime('%Y%m%d')
+            for url, label in [(TWSE_T86_MAIN, 'rwd'), (TWSE_T86_ALT, 'fund')]:
+                try:
+                    for sel in ['ALLBUT0999', 'ALL']:
+                        raw = safe_get_json(url,
+                            {'response':'json','date':ds,'selectType':sel}, timeout=20)
+                        if not raw: continue
+                        parsed = _parse_t86_response(raw)
+                        if parsed:
+                            inst.update(parsed)
+                            log.info(f'  T86 補用 {ds[:4]}/{ds[4:6]}/{ds[6:]} ({label}): {len(parsed)} 筆')
+                            break
+                    if inst: break
+                except Exception as e:
+                    log.debug(f'  T86 補用 {ds}: {e}')
+            if inst:
+                break
 
     # ── OTC 上櫃 TPEX 法人 ──
     tpex_inst = load_tpex_inst_today()
@@ -1024,7 +1061,7 @@ def self_check_price(results: list, sb: dict) -> bool:
 
 
 def main():
-    log.info('=== 台股雷達資料建置 V3.80 開始 ===')
+    log.info('=== 台股雷達資料建置 V3.81 開始 ===')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"} bs4:{"✓" if BS4_OK else "✗(regex備援)"}')
     data_date=date_now().strftime('%Y-%m-%d')
 
@@ -1141,7 +1178,7 @@ def main():
     log.info('Step 7: 輸出...')
     os.makedirs('data',exist_ok=True)
     tw_now=date_now()
-    out={'version':'V3.80','generated':tw_now.isoformat(),'dataDate':data_date,
+    out={'version':'V3.81','generated':tw_now.isoformat(),'dataDate':data_date,
          'source':'yfinance+finmind+twse' if FINMIND_TOKENS else 'yfinance+twse',
          'stockCount':len(results),'coverage':{'technical':hrs,'revenue':hrv,'institutional':hfi},
          'marketSummary':mkt,'stocks':results}
