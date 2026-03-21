@@ -5,7 +5,7 @@ Fix 2: log every 50  Fix 3: today data  Fix 4: marketSummary
 """
 import json, os, re, time, logging, tempfile, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta, timezone, time
+from datetime import datetime, timedelta, timezone, time as dt_time
 from typing import Optional, Dict, List, Tuple, Any
 import requests
 
@@ -400,7 +400,7 @@ def load_t86() -> dict:
         # 判斷現在是否為交易時段（09:00~14:30 台灣時間）
         now_tw = date_now()
         is_trading_hours = (now_tw.weekday() < 5 and
-                            time(9, 0) <= now_tw.time() <= time(14, 35))
+                            dt_time(9, 0) <= now_tw.time() <= dt_time(14, 35))
         if is_trading_hours:
             log.warning('  T86 今日: 交易時段內無資料，可能尚未更新')
         else:
@@ -1061,7 +1061,7 @@ def self_check_price(results: list, sb: dict) -> bool:
 
 
 def main():
-    log.info('=== 台股雷達資料建置 V3.81 開始 ===')
+    log.info('=== 台股雷達資料建置 V3.82 開始 ===')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"} bs4:{"✓" if BS4_OK else "✗(regex備援)"}')
     data_date=date_now().strftime('%Y-%m-%d')
 
@@ -1178,7 +1178,7 @@ def main():
     log.info('Step 7: 輸出...')
     os.makedirs('data',exist_ok=True)
     tw_now=date_now()
-    out={'version':'V3.81','generated':tw_now.isoformat(),'dataDate':data_date,
+    out={'version':'V3.82','generated':tw_now.isoformat(),'dataDate':data_date,
          'source':'yfinance+finmind+twse' if FINMIND_TOKENS else 'yfinance+twse',
          'stockCount':len(results),'coverage':{'technical':hrs,'revenue':hrv,'institutional':hfi},
          'marketSummary':mkt,'stocks':results}
