@@ -43,6 +43,8 @@ STOCK_LIMIT    = int(os.environ.get('STOCK_LIMIT','0'))
 TWSE_DAY_ALL   = 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'
 TWSE_DAY_ALL2  = 'https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL'  # 盤後完整版
 TPEX_DAY_ALL   = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes'  # 上櫃
+TPEX_INST_TODAY= 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_perday_3major_institution'  # 上櫃今日法人
+TPEX_INST_HIST = 'https://www.tpex.org.tw/web/stock/3invest/daily/3itrade_download.php'  # 上櫃歷史法人
 TWSE_LISTED    = 'https://openapi.twse.com.tw/v1/opendata/t187ap03_L'
 TWSE_T86       = 'https://openapi.twse.com.tw/v1/fund/T86'     # OpenAPI（備援）
 TWSE_T86_MAIN  = 'https://www.twse.com.tw/rwd/zh/fund/T86'     # 主要（盤後正式）
@@ -317,15 +319,48 @@ def _parse_t86_response(raw) -> dict:
     return inst
 
 
+def load_tpex_inst_today() -> dict:
+    """
+    TPEX 上櫃今日三大法人（完全免費）。
+    URL: https://www.tpex.org.tw/openapi/v1/tpex_mainboard_perday_3major_institution
+    欄位: SecuritiesCompanyCode, ForeignInvestmentNetBuySell, InvestmentTrustNetBuySell
+    """
+    inst = {}
+    try:
+        raw = safe_get_json(TPEX_INST_TODAY, timeout=20)
+        for s in (raw or []):
+            code = (s.get('SecuritiesCompanyCode') or s.get('代號') or '').strip()
+            if not is_equity(code):
+                continue
+            def fv(*keys):
+                for k in keys:
+                    v = s.get(k)
+                    if v is not None and str(v).strip() not in ('', '--', '-'):
+                        try: return float(str(v).replace(',', ''))
+                        except: pass
+                return 0.0
+            fgn   = fv('ForeignInvestmentNetBuySell', '外資及陸資買賣超股數', '外資買賣超') * 1000
+            trust = fv('InvestmentTrustNetBuySell', '投信買賣超股數', '投信買賣超') * 1000
+            inst[code] = {
+                'foreignNet': round(fgn), 'trustNet': round(trust),
+                'foreignBuy': fgn > 0,   'trustBuy': trust > 0,
+            }
+        log.info(f'  TPEX 今日法人: {len(inst)} 筆')
+    except Exception as e:
+        log.debug(f'  TPEX 今日法人: {e}')
+    return inst
+
+
 def load_t86() -> dict:
     """
     載入今日三大法人買賣超。
-    策略：複用 load_t86_historical(1) 取今日資料，格式與歷史相同。
-    同時保留 OpenAPI 備援（盤中即時更新用）。
+    上市(TSE)：TWSE T86
+    上櫃(OTC)：TPEX 三大法人 API
     """
     today_str = date_now().strftime('%Y%m%d')
+    inst: dict = {}
 
-    # 1. 嘗試 www.twse.com.tw（盤後正式資料）
+    # ── TSE 上市 T86 ──
     for url, label in [(TWSE_T86_MAIN, 'rwd'), (TWSE_T86_ALT, 'fund')]:
         try:
             for sel in ['ALLBUT0999', 'ALL']:
@@ -333,27 +368,38 @@ def load_t86() -> dict:
                 raw = safe_get_json(url, params=params, timeout=30)
                 if raw is None:
                     continue
-                inst = _parse_t86_response(raw)
-                if inst:
-                    log.info(f'  T86 今日 ({label}/{sel}): {len(inst)} 筆')
-                    return inst
+                parsed = _parse_t86_response(raw)
+                if parsed:
+                    inst.update(parsed)
+                    log.info(f'  T86 今日 ({label}/{sel}): {len(parsed)} 筆')
+                    break
+            if inst:
+                break
         except Exception as e:
             log.debug(f'  T86 {label}: {e}')
 
-    # 2. OpenAPI 備援（盤中）
-    try:
-        raw = safe_get_json(TWSE_T86, timeout=20)
-        if raw:
-            inst = _parse_t86_response(raw)
-            if inst:
-                log.info(f'  T86 今日 (OpenAPI): {len(inst)} 筆')
-                return inst
-    except Exception as e:
-        log.debug(f'  T86 OpenAPI: {e}')
+    if not inst:
+        try:
+            raw = safe_get_json(TWSE_T86, timeout=20)
+            if raw:
+                parsed = _parse_t86_response(raw)
+                if parsed:
+                    inst.update(parsed)
+                    log.info(f'  T86 今日 (OpenAPI): {len(parsed)} 筆')
+        except Exception as e:
+            log.debug(f'  T86 OpenAPI: {e}')
 
-    # 3. 從歷史 T86 的第 1 天（昨日）補用
-    log.warning('  T86 今日: 無資料，嘗試使用昨日資料替代')
-    return {}
+    if not inst:
+        log.warning('  T86 今日: 無資料，嘗試使用昨日資料替代')
+
+    # ── OTC 上櫃 TPEX 法人 ──
+    tpex_inst = load_tpex_inst_today()
+    before = len(inst)
+    for code, v in tpex_inst.items():
+        if code not in inst:   # 不覆蓋 TSE 資料
+            inst[code] = v
+    log.info(f'  法人合計: TSE {before} + OTC {len(inst)-before} = {len(inst)} 支')
+    return inst
 
 def load_t86_historical(days: int = 10) -> dict:
     """
@@ -399,7 +445,53 @@ def load_t86_historical(days: int = 10) -> dict:
             except Exception as e:
                 log.debug(f'  T86 hist {ds} {label}: {e}')
 
-    log.info(f'  T86歷史: {fetched} 交易日，{len(daily)} 支個股')
+    log.info(f'  T86歷史(TSE): {fetched} 交易日，{len(daily)} 支個股')
+
+    # ── TPEX 上櫃歷史法人（每日一次呼叫，完全免費）──
+    tpex_fetched = 0
+    for delta in range(20):
+        if tpex_fetched >= days:
+            break
+        d = now - timedelta(days=delta)
+        if d.weekday() >= 5:
+            continue
+        ds_tpex = d.strftime('%Y/%m/%d')   # TPEX 日期格式
+        try:
+            j = safe_get_json(TPEX_INST_TODAY,
+                              params={'date': ds_tpex, 'response': 'json'}, timeout=20)
+            if not j:
+                # Try without date param to get today
+                if delta == 0:
+                    j = safe_get_json(TPEX_INST_TODAY, timeout=20)
+            if not j:
+                continue
+            ok_tpex = 0
+            for s in (j if isinstance(j, list) else j.get('data', [])):
+                code = (s.get('SecuritiesCompanyCode') or s.get('代號') or '').strip()
+                if not is_equity(code) or code in daily:   # 不覆蓋 TSE 資料
+                    continue
+                def fv2(*keys):
+                    for k in keys:
+                        v = s.get(k)
+                        if v is not None and str(v).strip() not in ('','--','-'):
+                            try: return float(str(v).replace(',',''))
+                            except: pass
+                    return 0.0
+                fgn   = fv2('ForeignInvestmentNetBuySell','外資及陸資買賣超股數','外資買賣超') * 1000
+                trust = fv2('InvestmentTrustNetBuySell','投信買賣超股數','投信買賣超') * 1000
+                if code not in daily:
+                    daily[code] = {'f':[], 't':[]}
+                daily[code]['f'].append(fgn)
+                daily[code]['t'].append(trust)
+                ok_tpex += 1
+            if ok_tpex > 0:
+                tpex_fetched += 1
+                log.debug(f'  TPEX hist {ds_tpex}: {ok_tpex} 筆')
+            time.sleep(TWSE_SLEEP)
+        except Exception as e:
+            log.debug(f'  TPEX hist {ds_tpex}: {e}')
+
+    log.info(f'  T86歷史合計: TSE+OTC {len(daily)} 支個股')
 
     out = {}
     for code, v in daily.items():
@@ -889,7 +981,7 @@ def self_check_price(results: list, sb: dict) -> bool:
 
 
 def main():
-    log.info('=== 台股雷達資料建置 V3.77 開始 ===')
+    log.info('=== 台股雷達資料建置 V3.78 開始 ===')
     log.info(f'yfinance:{"✓" if YF_OK else "✗"} pandas:{"✓" if PANDAS_OK else "✗"} bs4:{"✓" if BS4_OK else "✗(regex備援)"}')
     data_date=date_now().strftime('%Y-%m-%d')
 
@@ -1006,7 +1098,7 @@ def main():
     log.info('Step 7: 輸出...')
     os.makedirs('data',exist_ok=True)
     tw_now=date_now()
-    out={'version':'V3.77','generated':tw_now.isoformat(),'dataDate':data_date,
+    out={'version':'V3.78','generated':tw_now.isoformat(),'dataDate':data_date,
          'source':'yfinance+finmind+twse' if FINMIND_TOKENS else 'yfinance+twse',
          'stockCount':len(results),'coverage':{'technical':hrs,'revenue':hrv,'institutional':hfi},
          'marketSummary':mkt,'stocks':results}
